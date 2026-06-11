@@ -1,35 +1,46 @@
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+import psycopg
 
 from rfq_engine.errors import InsufficientFundsError
-from rfq_engine.models import Balance
 
 
 class Ledger:
-    def __init__(self, session: Session) -> None:
-        self.session = session
+    """Balance mutations — every statement is explicit SQL."""
 
-    def _balance(self, participant_id: UUID) -> Balance:
-        return self.session.execute(
-            select(Balance).where(Balance.participant_id == participant_id).with_for_update()
-        ).scalar_one()
+    def __init__(self, conn: psycopg.Connection) -> None:
+        self.conn = conn
 
     def reserve(self, participant_id: UUID, amount: Decimal) -> None:
-        b = self._balance(participant_id)
-        if b.available < amount:
-            raise InsufficientFundsError(f"need {amount}, have {b.available}")
-        b.available -= amount
-        b.reserved += amount
+        row = self.conn.execute(
+            """
+            UPDATE balances
+            SET available = available - %(amount)s,
+                reserved = reserved + %(amount)s
+            WHERE participant_id = %(participant_id)s
+              AND available >= %(amount)s
+            RETURNING participant_id
+            """,
+            {"participant_id": participant_id, "amount": amount},
+        ).fetchone()
+        if row is None:
+            raise InsufficientFundsError(f"cannot reserve {amount} for {participant_id}")
 
     def release_reservation(self, participant_id: UUID, amount: Decimal) -> None:
-        b = self._balance(participant_id)
-        if b.reserved < amount:
-            raise InsufficientFundsError(f"cannot release {amount}, reserved {b.reserved}")
-        b.reserved -= amount
-        b.available += amount
+        row = self.conn.execute(
+            """
+            UPDATE balances
+            SET reserved = reserved - %(amount)s,
+                available = available + %(amount)s
+            WHERE participant_id = %(participant_id)s
+              AND reserved >= %(amount)s
+            RETURNING participant_id
+            """,
+            {"participant_id": participant_id, "amount": amount},
+        ).fetchone()
+        if row is None:
+            raise InsufficientFundsError(f"cannot release {amount} for {participant_id}")
 
     def lock_escrow(
         self,
@@ -38,16 +49,33 @@ class Ledger:
         mm_id: UUID,
         mm_amount: Decimal,
     ) -> None:
-        requester = self._balance(requester_id)
-        mm = self._balance(mm_id)
-        if requester.available < requester_amount:
+        req = self.conn.execute(
+            """
+            UPDATE balances
+            SET available = available - %(amount)s,
+                locked = locked + %(amount)s
+            WHERE participant_id = %(participant_id)s
+              AND available >= %(amount)s
+            RETURNING participant_id
+            """,
+            {"participant_id": requester_id, "amount": requester_amount},
+        ).fetchone()
+        if req is None:
             raise InsufficientFundsError("requester insufficient funds")
-        if mm.reserved < mm_amount:
+
+        mm = self.conn.execute(
+            """
+            UPDATE balances
+            SET reserved = reserved - %(amount)s,
+                locked = locked + %(amount)s
+            WHERE participant_id = %(participant_id)s
+              AND reserved >= %(amount)s
+            RETURNING participant_id
+            """,
+            {"participant_id": mm_id, "amount": mm_amount},
+        ).fetchone()
+        if mm is None:
             raise InsufficientFundsError("MM insufficient reserved collateral")
-        requester.available -= requester_amount
-        requester.locked += requester_amount
-        mm.reserved -= mm_amount
-        mm.locked += mm_amount
 
     def payout(
         self,
@@ -57,16 +85,46 @@ class Ledger:
         mm_locked: Decimal,
         winner_id: UUID,
     ) -> None:
-        requester = self._balance(requester_id)
-        mm = self._balance(mm_id)
         total = requester_locked + mm_locked
         if winner_id == requester_id:
-            requester.locked -= requester_locked
-            mm.locked -= mm_locked
-            requester.available += total
+            self.conn.execute(
+                """
+                UPDATE balances
+                SET locked = locked - %(req_locked)s,
+                    available = available + %(total)s
+                WHERE participant_id = %(participant_id)s
+                """,
+                {
+                    "participant_id": requester_id,
+                    "req_locked": requester_locked,
+                    "total": total,
+                },
+            )
+            self.conn.execute(
+                """
+                UPDATE balances
+                SET locked = locked - %(mm_locked)s
+                WHERE participant_id = %(participant_id)s
+                """,
+                {"participant_id": mm_id, "mm_locked": mm_locked},
+            )
         elif winner_id == mm_id:
-            requester.locked -= requester_locked
-            mm.locked -= mm_locked
-            mm.available += total
+            self.conn.execute(
+                """
+                UPDATE balances
+                SET locked = locked - %(req_locked)s
+                WHERE participant_id = %(participant_id)s
+                """,
+                {"participant_id": requester_id, "req_locked": requester_locked},
+            )
+            self.conn.execute(
+                """
+                UPDATE balances
+                SET locked = locked - %(mm_locked)s,
+                    available = available + %(total)s
+                WHERE participant_id = %(participant_id)s
+                """,
+                {"participant_id": mm_id, "mm_locked": mm_locked, "total": total},
+            )
         else:
             raise ValueError(f"unknown winner {winner_id}")

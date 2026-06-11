@@ -7,32 +7,34 @@ Core of a permissionless RFQ system for binary-outcome contracts.
 ```bash
 createdb rfq_test   # once
 pip install --break-system-packages -e ".[dev]"
-export DATABASE_URL=postgresql+psycopg:///rfq_test
+export DATABASE_URL=postgresql:///rfq_test
 pytest -v
 ```
 
-With Docker: `docker compose up -d` and use `DATABASE_URL=postgresql+psycopg://rfq:rfq@localhost:5432/rfq`.
+With Docker: `docker compose up -d` and use `DATABASE_URL=postgresql://rfq:rfq@localhost:5432/rfq`.
 
 ## Layout
 
 ```
+schema.sql       # all tables — read this first
 rfq_engine/
-  engine.py    # RfqEngine — all business logic
-  ledger.py    # balance mutations (available / reserved / locked)
-  models.py    # Postgres tables
-  enums.py     # statuses
-  money.py     # premium & collateral formulas
+  engine.py      # business logic + SQL queries
+  ledger.py      # balance UPDATEs only
+  enums.py
+  errors.py
 ```
 
-One class to trace in the interview: `RfqEngine`. Pass `at=` — the current timestamp for that operation (tests use a fixed time).
+No ORM. Every `INSERT`/`UPDATE`/`SELECT` is visible in `engine.py` and `ledger.py`.
 
-## Capital formulas
+## Capital (buy YES, notional N, price p)
 
-Requester buys YES at price `p`, notional `N`:
+- MM reserves `N * (1 - p)` on quote (`ledger.reserve`)
+- Requester locks `N * p` on accept (`ledger.lock_escrow`)
 
-- MM reserves `N * (1 - p)` on quote
-- Requester locks `N * p` on accept
-- YES → requester wins full pot; NO → MM keeps collateral
+## Deadlines
+
+- **Response deadline** — requester sets at submit (`response_deadline_seconds`)
+- **Accept window** — venue policy (`ACCEPT_WINDOW_SECONDS`)
 
 ## Flow
 

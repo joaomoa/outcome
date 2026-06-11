@@ -1,36 +1,39 @@
 import os
 from datetime import datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 
+import psycopg
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
 
 from rfq_engine.engine import RfqEngine
-from rfq_engine.models import Base
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 FIXED_AT = datetime(2026, 6, 11, 12, 0, 0, tzinfo=timezone.utc)
+SCHEMA = (Path(__file__).parent.parent / "schema.sql").read_text()
 
 
 @pytest.fixture(scope="session")
-def engine():
-    eng = create_engine(DATABASE_URL)
-    Base.metadata.create_all(eng)
-    return eng
+def db():
+    conn = psycopg.connect(DATABASE_URL, autocommit=True)
+    conn.execute("DROP SCHEMA public CASCADE")
+    conn.execute("CREATE SCHEMA public")
+    conn.execute(SCHEMA)
+    conn.close()
 
 
 @pytest.fixture
-def db_session(engine):
-    session = Session(engine)
-    yield session
-    session.rollback()
-    session.close()
+def conn(db):
+    connection = psycopg.connect(DATABASE_URL, row_factory=psycopg.rows.dict_row)
+    connection.execute("BEGIN")
+    yield connection
+    connection.rollback()
+    connection.close()
 
 
 @pytest.fixture
-def engine_svc(db_session):
-    return RfqEngine(db_session, FIXED_AT)
+def engine_svc(conn):
+    return RfqEngine(conn, FIXED_AT)
 
 
 @pytest.fixture
@@ -38,5 +41,4 @@ def participants(engine_svc):
     requester = engine_svc.create_participant("requester", Decimal("10000"))
     mm1 = engine_svc.create_participant("mm_alpha", Decimal("10000"))
     mm2 = engine_svc.create_participant("mm_beta", Decimal("10000"))
-    engine_svc.session.flush()
     return {"requester": requester, "mm1": mm1, "mm2": mm2}
