@@ -18,13 +18,14 @@ With Docker: `docker compose up -d` and use `DATABASE_URL=postgresql://rfq:rfq@l
 ```
 schema.sql       # all tables — read this first
 rfq_engine/
-  engine.py      # business logic + SQL queries
-  ledger.py      # balance UPDATEs only
+  engine.py      # business logic
+  queries.py     # all SELECT/INSERT/UPDATE
+  ledger.py      # balance UPDATEs
   enums.py
   errors.py
 ```
 
-No ORM. Every `INSERT`/`UPDATE`/`SELECT` is visible in `engine.py` and `ledger.py`.
+No ORM. SQL lives in `queries.py` and `ledger.py`; `engine.py` is rules and flow.
 
 ## Capital (buy YES, notional N, price p)
 

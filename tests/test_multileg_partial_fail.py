@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from rfq_engine.engine import LegInput
 from rfq_engine.enums import QuoteStatus, RequestStatus
+from rfq_engine.queries import Queries
 
 from helpers import get_balance, get_legs, submit_two_leg_request
 
@@ -19,10 +20,7 @@ def test_multileg_fails_when_one_leg_unquoted(engine, participants):
     assert engine.run_matching(request_id) == RequestStatus.FAILED
     assert engine.get_request_status(request_id) == RequestStatus.FAILED
 
-    quotes = engine.conn.execute(
-        "SELECT * FROM quotes WHERE leg_id = ANY(%(ids)s)",
-        {"ids": [leg["id"] for leg in legs]},
-    ).fetchall()
+    quotes = Queries(engine.conn).list_quotes_for_legs([leg["id"] for leg in legs])
     assert len(quotes) == 1
     assert quotes[0]["status"] == QuoteStatus.ACTIVE.value
 

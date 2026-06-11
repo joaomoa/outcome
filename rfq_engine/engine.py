@@ -14,6 +14,7 @@ from rfq_engine.errors import (
     QuoteExpiredError,
 )
 from rfq_engine.ledger import Ledger
+from rfq_engine.queries import Queries
 
 ACCEPT_WINDOW_SECONDS = 300.0
 
@@ -25,27 +26,16 @@ class LegInput:
 
 
 class RfqEngine:
-    """Each public mutating method runs in its own conn.transaction() — commit or full rollback."""
-
     def __init__(self, conn: psycopg.Connection, at: datetime) -> None:
         self.conn = conn
         self.at = at
         self._ledger = Ledger(conn)
+        self._db = Queries(conn)
 
     def create_participant(self, name: str, initial_balance: Decimal) -> UUID:
         with self.conn.transaction():
             participant_id = uuid.uuid4()
-            self.conn.execute(
-                """
-                WITH p AS (
-                    INSERT INTO participants (id, name) VALUES (%(id)s, %(name)s)
-                    RETURNING id
-                )
-                INSERT INTO balances (participant_id, available, reserved, locked)
-                SELECT id, %(available)s, 0, 0 FROM p
-                """,
-                {"id": participant_id, "name": name, "available": initial_balance},
-            )
+            self._db.insert_participant(participant_id, name, initial_balance)
         return participant_id
 
     def submit_request(
@@ -56,31 +46,19 @@ class RfqEngine:
     ) -> UUID:
         with self.conn.transaction():
             request_id = uuid.uuid4()
-            self.conn.execute(
-                """
-                INSERT INTO requests (id, requester_id, status, response_deadline)
-                VALUES (%(id)s, %(requester_id)s, %(status)s, %(response_deadline)s)
-                """,
-                {
-                    "id": request_id,
-                    "requester_id": requester_id,
-                    "status": RequestStatus.QUOTING.value,
-                    "response_deadline": self.at + timedelta(seconds=response_deadline_seconds),
-                },
+            self._db.insert_request(
+                request_id,
+                requester_id,
+                RequestStatus.QUOTING,
+                self.at + timedelta(seconds=response_deadline_seconds),
             )
             for i, leg in enumerate(legs):
-                self.conn.execute(
-                    """
-                    INSERT INTO legs (id, request_id, contract_description, notional, leg_index)
-                    VALUES (%(id)s, %(request_id)s, %(desc)s, %(notional)s, %(leg_index)s)
-                    """,
-                    {
-                        "id": uuid.uuid4(),
-                        "request_id": request_id,
-                        "desc": leg.contract_description,
-                        "notional": leg.notional,
-                        "leg_index": i,
-                    },
+                self._db.insert_leg(
+                    uuid.uuid4(),
+                    request_id,
+                    leg.contract_description,
+                    leg.notional,
+                    i,
                 )
         return request_id
 
@@ -93,17 +71,11 @@ class RfqEngine:
         expires_in_seconds: float,
     ) -> UUID:
         with self.conn.transaction():
-            leg = self.conn.execute(
-                "SELECT * FROM legs WHERE id = %(id)s", {"id": leg_id}
-            ).fetchone()
+            leg = self._db.get_leg(leg_id)
             if leg is None:
                 raise NotFoundError(f"leg {leg_id} not found")
 
-            req = self.conn.execute(
-                "SELECT * FROM requests WHERE id = %(id)s FOR UPDATE",
-                {"id": leg["request_id"]},
-            ).fetchone()
-
+            req = self._db.get_request_for_update(leg["request_id"])
             if req["status"] not in (RequestStatus.OPEN.value, RequestStatus.QUOTING.value):
                 raise InvalidStateError(f"cannot quote in status {req['status']}")
             if self.at >= req["response_deadline"]:
@@ -113,78 +85,46 @@ class RfqEngine:
 
             reserve = leg["notional"] * (Decimal("1") - price)
             quote_id = uuid.uuid4()
-            self.conn.execute(
-                """
-                INSERT INTO quotes (id, leg_id, mm_id, price, size, expires_at, status, reserved_amount)
-                VALUES (%(id)s, %(leg_id)s, %(mm_id)s, %(price)s, %(size)s, %(expires_at)s, %(status)s, %(reserved)s)
-                """,
-                {
-                    "id": quote_id,
-                    "leg_id": leg_id,
-                    "mm_id": mm_id,
-                    "price": price,
-                    "size": size,
-                    "expires_at": self.at + timedelta(seconds=expires_in_seconds),
-                    "status": QuoteStatus.ACTIVE.value,
-                    "reserved": reserve,
-                },
+            self._db.insert_quote(
+                quote_id,
+                leg_id,
+                mm_id,
+                price,
+                size,
+                self.at + timedelta(seconds=expires_in_seconds),
+                reserve,
             )
             self._ledger.reserve(mm_id, reserve)
         return quote_id
 
     def run_matching(self, request_id: UUID) -> RequestStatus:
         with self.conn.transaction():
-            req = self.conn.execute(
-                "SELECT * FROM requests WHERE id = %(id)s FOR UPDATE",
-                {"id": request_id},
-            ).fetchone()
+            req = self._db.get_request_for_update(request_id)
             if req is None:
                 raise NotFoundError(f"request {request_id} not found")
             if req["status"] not in (RequestStatus.QUOTING.value, RequestStatus.OPEN.value):
                 raise InvalidStateError(f"cannot match in status {req['status']}")
 
-            legs = self.conn.execute(
-                "SELECT * FROM legs WHERE request_id = %(id)s ORDER BY leg_index",
-                {"id": request_id},
-            ).fetchall()
-
             selected: list[dict] = []
-            for leg in legs:
-                best = self._best_quote(leg["id"], leg["notional"])
+            for leg in self._db.list_legs(request_id):
+                best = self._db.get_best_quote(leg["id"], leg["notional"], self.at)
                 if best is None:
-                    self.conn.execute(
-                        "UPDATE requests SET status = %(status)s WHERE id = %(id)s",
-                        {"id": request_id, "status": RequestStatus.FAILED.value},
-                    )
+                    self._db.update_request_status(request_id, RequestStatus.FAILED)
                     return RequestStatus.FAILED
                 selected.append(best)
 
             for quote in selected:
-                self.conn.execute(
-                    "UPDATE quotes SET status = %(status)s WHERE id = %(id)s",
-                    {"id": quote["id"], "status": QuoteStatus.SELECTED.value},
-                )
-            self.conn.execute(
-                """
-                UPDATE requests
-                SET status = %(status)s, accept_deadline = %(accept_deadline)s
-                WHERE id = %(id)s
-                """,
-                {
-                    "id": request_id,
-                    "status": RequestStatus.PRESENTED.value,
-                    "accept_deadline": self.at + timedelta(seconds=ACCEPT_WINDOW_SECONDS),
-                },
+                self._db.update_quote_status(quote["id"], QuoteStatus.SELECTED)
+            self._db.update_request_presented(
+                request_id,
+                self.at + timedelta(seconds=ACCEPT_WINDOW_SECONDS),
             )
             return RequestStatus.PRESENTED
 
     def accept(self, request_id: UUID) -> None:
         quote_expired = False
         with self.conn.transaction():
-            req = self.conn.execute(
-                "SELECT * FROM requests WHERE id = %(id)s FOR UPDATE",
-                {"id": request_id},
-            ).fetchone()
+            req = self._db.get_request_for_update(request_id)
             if req is None:
                 raise NotFoundError(f"request {request_id} not found")
             if req["status"] != RequestStatus.PRESENTED.value:
@@ -192,28 +132,14 @@ class RfqEngine:
             if req["accept_deadline"] is None or self.at > req["accept_deadline"]:
                 raise QuoteExpiredError("accept window expired")
 
-            legs = self.conn.execute(
-                "SELECT * FROM legs WHERE request_id = %(id)s ORDER BY leg_index",
-                {"id": request_id},
-            ).fetchall()
-
             selected: list[tuple[dict, dict]] = []
-            for leg in legs:
-                quote = self.conn.execute(
-                    """
-                    SELECT * FROM quotes
-                    WHERE leg_id = %(leg_id)s AND status = %(status)s
-                    """,
-                    {"leg_id": leg["id"], "status": QuoteStatus.SELECTED.value},
-                ).fetchone()
+            for leg in self._db.list_legs(request_id):
+                quote = self._db.get_selected_quote(leg["id"])
                 if quote is None:
                     raise InvalidStateError(f"leg {leg['id']} has no selected quote")
                 if quote["expires_at"] <= self.at:
                     self._release_quotes(request_id, QuoteStatus.REJECTED)
-                    self.conn.execute(
-                        "UPDATE requests SET status = %(status)s WHERE id = %(id)s",
-                        {"id": request_id, "status": RequestStatus.FAILED.value},
-                    )
+                    self._db.update_request_status(request_id, RequestStatus.FAILED)
                     quote_expired = True
                     break
                 selected.append((leg, quote))
@@ -223,112 +149,60 @@ class RfqEngine:
                     req_amt = leg["notional"] * quote["price"]
                     mm_amt = leg["notional"] * (Decimal("1") - quote["price"])
                     self._ledger.lock_escrow(req["requester_id"], req_amt, quote["mm_id"], mm_amt)
-                    self.conn.execute(
-                        """
-                        INSERT INTO escrows (id, leg_id, requester_id, mm_id, requester_locked, mm_locked)
-                        VALUES (%(id)s, %(leg_id)s, %(requester_id)s, %(mm_id)s, %(req)s, %(mm)s)
-                        """,
-                        {
-                            "id": uuid.uuid4(),
-                            "leg_id": leg["id"],
-                            "requester_id": req["requester_id"],
-                            "mm_id": quote["mm_id"],
-                            "req": req_amt,
-                            "mm": mm_amt,
-                        },
+                    self._db.insert_escrow(
+                        uuid.uuid4(),
+                        leg["id"],
+                        req["requester_id"],
+                        quote["mm_id"],
+                        req_amt,
+                        mm_amt,
                     )
                 selected_ids = {q["id"] for _, q in selected}
                 self._reject_competing(request_id, selected_ids)
-                self.conn.execute(
-                    "UPDATE requests SET status = %(status)s WHERE id = %(id)s",
-                    {"id": request_id, "status": RequestStatus.ESCROW_LOCKED.value},
-                )
+                self._db.update_request_status(request_id, RequestStatus.ESCROW_LOCKED)
         if quote_expired:
             raise QuoteExpiredError("quote expired before accept")
 
     def reject(self, request_id: UUID) -> None:
         with self.conn.transaction():
-            req = self.conn.execute(
-                "SELECT * FROM requests WHERE id = %(id)s FOR UPDATE",
-                {"id": request_id},
-            ).fetchone()
+            req = self._db.get_request_for_update(request_id)
             if req is None:
                 raise NotFoundError(f"request {request_id} not found")
             if req["status"] != RequestStatus.PRESENTED.value:
                 raise InvalidStateError(f"cannot reject in status {req['status']}")
             self._release_quotes(request_id, QuoteStatus.REJECTED)
-            self.conn.execute(
-                "UPDATE requests SET status = %(status)s WHERE id = %(id)s",
-                {"id": request_id, "status": RequestStatus.REJECTED.value},
-            )
+            self._db.update_request_status(request_id, RequestStatus.REJECTED)
 
     def process_expirations(self) -> list[UUID]:
         with self.conn.transaction():
             expired: list[UUID] = []
-            rows = self.conn.execute(
-                """
-                SELECT id FROM requests
-                WHERE status = %(status)s AND accept_deadline < %(at)s
-                FOR UPDATE
-                """,
-                {"status": RequestStatus.PRESENTED.value, "at": self.at},
-            ).fetchall()
-            for row in rows:
+            for row in self._db.list_expired_presented_requests(self.at):
                 self._release_quotes(row["id"], QuoteStatus.EXPIRED)
-                self.conn.execute(
-                    "UPDATE requests SET status = %(status)s WHERE id = %(id)s",
-                    {"id": row["id"], "status": RequestStatus.EXPIRED.value},
-                )
+                self._db.update_request_status(row["id"], RequestStatus.EXPIRED)
                 expired.append(row["id"])
             return expired
 
     def initiate_resolution(self, request_id: UUID) -> None:
         with self.conn.transaction():
-            req = self.conn.execute(
-                "SELECT status FROM requests WHERE id = %(id)s",
-                {"id": request_id},
-            ).fetchone()
+            req = self._db.get_request(request_id)
             if req is None:
                 raise NotFoundError(f"request {request_id} not found")
             if req["status"] != RequestStatus.ESCROW_LOCKED.value:
                 raise InvalidStateError(f"cannot resolve in status {req['status']}")
 
-            legs = self.conn.execute(
-                "SELECT id FROM legs WHERE request_id = %(id)s",
-                {"id": request_id},
-            ).fetchall()
-            for leg in legs:
-                self.conn.execute(
-                    """
-                    INSERT INTO resolutions (id, leg_id, status)
-                    VALUES (%(id)s, %(leg_id)s, %(status)s)
-                    """,
-                    {
-                        "id": uuid.uuid4(),
-                        "leg_id": leg["id"],
-                        "status": ResolutionStatus.PENDING.value,
-                    },
-                )
-            self.conn.execute(
-                "UPDATE requests SET status = %(status)s WHERE id = %(id)s",
-                {"id": request_id, "status": RequestStatus.RESOLVED.value},
-            )
+            for leg in self._db.list_leg_ids(request_id):
+                self._db.insert_resolution(uuid.uuid4(), leg["id"])
+            self._db.update_request_status(request_id, RequestStatus.RESOLVED)
 
     def resolve_leg(self, leg_id: UUID, outcome: ResolutionOutcome) -> None:
         with self.conn.transaction():
-            res = self.conn.execute(
-                "SELECT * FROM resolutions WHERE leg_id = %(leg_id)s FOR UPDATE",
-                {"leg_id": leg_id},
-            ).fetchone()
+            res = self._db.get_resolution_for_update(leg_id)
             if res is None:
                 raise NotFoundError(f"no resolution for leg {leg_id}")
             if res["status"] == ResolutionStatus.RESOLVED.value:
                 return
 
-            escrow = self.conn.execute(
-                "SELECT * FROM escrows WHERE leg_id = %(leg_id)s",
-                {"leg_id": leg_id},
-            ).fetchone()
+            escrow = self._db.get_escrow(leg_id)
             winner = (
                 escrow["requester_id"]
                 if outcome == ResolutionOutcome.YES
@@ -341,99 +215,32 @@ class RfqEngine:
                 escrow["mm_locked"],
                 winner,
             )
-            self.conn.execute(
-                """
-                UPDATE resolutions SET status = %(status)s, outcome = %(outcome)s
-                WHERE leg_id = %(leg_id)s
-                """,
-                {
-                    "leg_id": leg_id,
-                    "status": ResolutionStatus.RESOLVED.value,
-                    "outcome": outcome.value,
-                },
-            )
+            self._db.update_resolution(leg_id, ResolutionStatus.RESOLVED, outcome.value)
 
     def settle_request(self, request_id: UUID) -> None:
         with self.conn.transaction():
-            legs = self.conn.execute(
-                "SELECT id FROM legs WHERE request_id = %(id)s",
-                {"id": request_id},
-            ).fetchall()
-            for leg in legs:
-                res = self.conn.execute(
-                    "SELECT status FROM resolutions WHERE leg_id = %(leg_id)s",
-                    {"leg_id": leg["id"]},
-                ).fetchone()
+            for leg in self._db.list_leg_ids(request_id):
+                res = self._db.get_resolution(leg["id"])
                 if res is None or res["status"] != ResolutionStatus.RESOLVED.value:
                     raise InvalidStateError(f"leg {leg['id']} not resolved")
-            self.conn.execute(
-                "UPDATE requests SET status = %(status)s WHERE id = %(id)s",
-                {"id": request_id, "status": RequestStatus.SETTLED.value},
-            )
+            self._db.update_request_status(request_id, RequestStatus.SETTLED)
 
     def get_request_status(self, request_id: UUID) -> RequestStatus:
-        row = self.conn.execute(
-            "SELECT status FROM requests WHERE id = %(id)s",
-            {"id": request_id},
-        ).fetchone()
-        if row is None:
+        status = self._db.get_request_status(request_id)
+        if status is None:
             raise NotFoundError(f"request {request_id} not found")
-        return RequestStatus(row["status"])
-
-    def _best_quote(self, leg_id: UUID, notional: Decimal) -> dict | None:
-        return self.conn.execute(
-            """
-            SELECT * FROM quotes
-            WHERE leg_id = %(leg_id)s
-              AND status = %(status)s
-              AND expires_at > %(at)s
-              AND size >= %(notional)s
-            ORDER BY price ASC, size DESC, created_at ASC
-            LIMIT 1
-            """,
-            {
-                "leg_id": leg_id,
-                "status": QuoteStatus.ACTIVE.value,
-                "at": self.at,
-                "notional": notional,
-            },
-        ).fetchone()
+        return RequestStatus(status)
 
     def _release_quotes(self, request_id: UUID, final_status: QuoteStatus) -> None:
-        legs = self.conn.execute(
-            "SELECT id FROM legs WHERE request_id = %(id)s",
-            {"id": request_id},
-        ).fetchall()
-        for leg in legs:
-            quotes = self.conn.execute(
-                "SELECT * FROM quotes WHERE leg_id = %(leg_id)s",
-                {"leg_id": leg["id"]},
-            ).fetchall()
-            for quote in quotes:
+        for leg in self._db.list_leg_ids(request_id):
+            for quote in self._db.list_quotes_for_leg(leg["id"]):
                 if quote["status"] in (QuoteStatus.ACTIVE.value, QuoteStatus.SELECTED.value):
                     self._ledger.release_reservation(quote["mm_id"], quote["reserved_amount"])
-                    self.conn.execute(
-                        "UPDATE quotes SET status = %(status)s WHERE id = %(id)s",
-                        {"id": quote["id"], "status": final_status.value},
-                    )
+                    self._db.update_quote_status(quote["id"], final_status)
 
     def _reject_competing(self, request_id: UUID, selected_ids: set[UUID]) -> None:
-        legs = self.conn.execute(
-            "SELECT id FROM legs WHERE request_id = %(id)s",
-            {"id": request_id},
-        ).fetchall()
-        for leg in legs:
-            quotes = self.conn.execute(
-                """
-                SELECT * FROM quotes
-                WHERE leg_id = %(leg_id)s AND status = %(status)s
-                """,
-                {"leg_id": leg["id"], "status": QuoteStatus.ACTIVE.value},
-            ).fetchall()
-            for quote in quotes:
+        for leg in self._db.list_leg_ids(request_id):
+            for quote in self._db.list_active_quotes_for_leg(leg["id"]):
                 if quote["id"] not in selected_ids:
                     self._ledger.release_reservation(quote["mm_id"], quote["reserved_amount"])
-                    self.conn.execute(
-                        "UPDATE quotes SET status = %(status)s WHERE id = %(id)s",
-                        {"id": quote["id"], "status": QuoteStatus.REJECTED.value},
-                    )
+                    self._db.update_quote_status(quote["id"], QuoteStatus.REJECTED)

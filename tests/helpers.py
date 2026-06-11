@@ -5,20 +5,15 @@ import psycopg
 
 from rfq_engine.engine import LegInput, RfqEngine
 from rfq_engine.enums import ResolutionOutcome
+from rfq_engine.queries import Queries
 
 
 def get_legs(conn: psycopg.Connection, request_id: UUID) -> list[dict]:
-    return conn.execute(
-        "SELECT * FROM legs WHERE request_id = %(id)s ORDER BY leg_index",
-        {"id": request_id},
-    ).fetchall()
+    return Queries(conn).list_legs(request_id)
 
 
 def get_balance(conn: psycopg.Connection, participant_id: UUID) -> dict:
-    return conn.execute(
-        "SELECT * FROM balances WHERE participant_id = %(id)s",
-        {"id": participant_id},
-    ).fetchone()
+    return Queries(conn).get_balance(participant_id)
 
 
 def submit_two_leg_request(eng: RfqEngine, requester_id: UUID) -> tuple:
