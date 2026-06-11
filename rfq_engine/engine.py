@@ -18,7 +18,7 @@ from rfq_engine.ledger import Ledger
 ACCEPT_WINDOW_SECONDS = 300.0
 
 
-@dataclass(frozen=True)
+@dataclass
 class LegInput:
     contract_description: str
     notional: Decimal
