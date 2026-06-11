@@ -4,7 +4,7 @@
 
 - State machine transitions and ledger semantics (`available` / `reserved` / `locked`)
 - `expires_at`, `response_deadline`, `accept_deadline` as absolute timestamps
-- `at: datetime` on `RfqEngine` — all time checks use that timestamp
+- Per-operation `at` (optional kwarg; test default on engine, else wall clock)
 - Best-quote ranking (price → size → created_at)
 
 ## Not invariant
@@ -16,7 +16,7 @@
 ## Built for cheap pivot
 
 - All TTLs stored as `timedelta` inputs → absolute `datetime` on write
-- fixed `at` in tests proves behavior is independent of wall clock
+- fixed test default + `accept(..., at=...)` proves behavior is independent of wall clock
 - Scheduler is a thin wrapper: `process_expirations()` + future `fail_past_response_deadline()` — swap cron frequency without touching core services
 
 ## What we built today

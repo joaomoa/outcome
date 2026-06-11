@@ -1,6 +1,6 @@
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID
 
@@ -26,11 +26,18 @@ class LegInput:
 
 
 class RfqEngine:
-    def __init__(self, conn: psycopg.Connection, at: datetime) -> None:
+    def __init__(self, conn: psycopg.Connection, at: datetime | None = None) -> None:
         self.conn = conn
-        self.at = at
+        self._default_at = at
         self._ledger = Ledger(conn)
         self._db = Queries(conn)
+
+    def _now(self, at: datetime | None = None) -> datetime:
+        if at is not None:
+            return at
+        if self._default_at is not None:
+            return self._default_at
+        return datetime.now(timezone.utc)
 
     def create_participant(self, name: str, initial_balance: Decimal) -> UUID:
         with self.conn.transaction():
@@ -43,14 +50,17 @@ class RfqEngine:
         requester_id: UUID,
         legs: list[LegInput],
         response_deadline_seconds: float,
+        *,
+        at: datetime | None = None,
     ) -> UUID:
+        now = self._now(at)
         with self.conn.transaction():
             request_id = uuid.uuid4()
             self._db.insert_request(
                 request_id,
                 requester_id,
                 RequestStatus.QUOTING,
-                self.at + timedelta(seconds=response_deadline_seconds),
+                now + timedelta(seconds=response_deadline_seconds),
             )
             for i, leg in enumerate(legs):
                 self._db.insert_leg(
@@ -69,7 +79,10 @@ class RfqEngine:
         price: Decimal,
         size: Decimal,
         expires_in_seconds: float,
+        *,
+        at: datetime | None = None,
     ) -> UUID:
+        now = self._now(at)
         with self.conn.transaction():
             leg = self._db.get_leg(leg_id)
             if leg is None:
@@ -78,7 +91,7 @@ class RfqEngine:
             req = self._db.get_request_for_update(leg["request_id"])
             if req["status"] not in (RequestStatus.OPEN.value, RequestStatus.QUOTING.value):
                 raise InvalidStateError(f"cannot quote in status {req['status']}")
-            if self.at >= req["response_deadline"]:
+            if now >= req["response_deadline"]:
                 raise InvalidStateError("response deadline passed")
             if size < leg["notional"]:
                 raise InvalidStateError(f"size {size} < notional {leg['notional']}")
@@ -91,13 +104,14 @@ class RfqEngine:
                 mm_id,
                 price,
                 size,
-                self.at + timedelta(seconds=expires_in_seconds),
+                now + timedelta(seconds=expires_in_seconds),
                 reserve,
             )
             self._ledger.reserve(mm_id, reserve)
         return quote_id
 
-    def run_matching(self, request_id: UUID) -> RequestStatus:
+    def run_matching(self, request_id: UUID, *, at: datetime | None = None) -> RequestStatus:
+        now = self._now(at)
         with self.conn.transaction():
             req = self._db.get_request_for_update(request_id)
             if req is None:
@@ -107,7 +121,7 @@ class RfqEngine:
 
             selected: list[dict] = []
             for leg in self._db.list_legs(request_id):
-                best = self._db.get_best_quote(leg["id"], leg["notional"], self.at)
+                best = self._db.get_best_quote(leg["id"], leg["notional"], now)
                 if best is None:
                     self._db.update_request_status(request_id, RequestStatus.FAILED)
                     return RequestStatus.FAILED
@@ -117,11 +131,12 @@ class RfqEngine:
                 self._db.update_quote_status(quote["id"], QuoteStatus.SELECTED)
             self._db.update_request_presented(
                 request_id,
-                self.at + timedelta(seconds=ACCEPT_WINDOW_SECONDS),
+                now + timedelta(seconds=ACCEPT_WINDOW_SECONDS),
             )
             return RequestStatus.PRESENTED
 
-    def accept(self, request_id: UUID) -> None:
+    def accept(self, request_id: UUID, *, at: datetime | None = None) -> None:
+        now = self._now(at)
         quote_expired = False
         with self.conn.transaction():
             req = self._db.get_request_for_update(request_id)
@@ -129,7 +144,7 @@ class RfqEngine:
                 raise NotFoundError(f"request {request_id} not found")
             if req["status"] != RequestStatus.PRESENTED.value:
                 raise ConflictError(f"cannot accept in status {req['status']}")
-            if req["accept_deadline"] is None or self.at > req["accept_deadline"]:
+            if req["accept_deadline"] is None or now > req["accept_deadline"]:
                 raise QuoteExpiredError("accept window expired")
 
             selected: list[tuple[dict, dict]] = []
@@ -137,7 +152,7 @@ class RfqEngine:
                 quote = self._db.get_selected_quote(leg["id"])
                 if quote is None:
                     raise InvalidStateError(f"leg {leg['id']} has no selected quote")
-                if quote["expires_at"] <= self.at:
+                if quote["expires_at"] <= now:
                     self._release_quotes(request_id, QuoteStatus.REJECTED)
                     self._db.update_request_status(request_id, RequestStatus.FAILED)
                     quote_expired = True
@@ -173,10 +188,11 @@ class RfqEngine:
             self._release_quotes(request_id, QuoteStatus.REJECTED)
             self._db.update_request_status(request_id, RequestStatus.REJECTED)
 
-    def process_expirations(self) -> list[UUID]:
+    def process_expirations(self, *, at: datetime | None = None) -> list[UUID]:
+        now = self._now(at)
         with self.conn.transaction():
             expired: list[UUID] = []
-            for row in self._db.list_expired_presented_requests(self.at):
+            for row in self._db.list_expired_presented_requests(now):
                 self._release_quotes(row["id"], QuoteStatus.EXPIRED)
                 self._db.update_request_status(row["id"], RequestStatus.EXPIRED)
                 expired.append(row["id"])
