@@ -11,7 +11,7 @@
 | **Insufficient MM funds at quote** | `reserve()` raises `InsufficientFundsError`; txn rolls back, no quote inserted |
 | **Insufficient requester funds at accept** | `lock_escrow()` raises; txn rolls back, no partial escrow |
 | **Competing quotes on same leg** | On accept, non-selected active quotes → `rejected` + reservation released |
-| **DB rollback** | All money mutations inside one Postgres transaction; rollback reverts balance changes |
+| **DB rollback** | Each `RfqEngine` public method uses `conn.transaction()` — failure rolls back the whole operation |
 
 ## Idempotency
 

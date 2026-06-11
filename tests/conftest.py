@@ -24,6 +24,7 @@ def db():
 
 @pytest.fixture
 def conn(db):
+    # Outer BEGIN/ROLLBACK isolates tests only; engine methods commit via conn.transaction().
     connection = psycopg.connect(DATABASE_URL, row_factory=psycopg.rows.dict_row)
     connection.execute("BEGIN")
     yield connection
