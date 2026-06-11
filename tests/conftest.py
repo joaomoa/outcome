@@ -32,13 +32,13 @@ def conn(db):
 
 
 @pytest.fixture
-def engine_svc(conn):
+def engine(conn):
     return RfqEngine(conn, FIXED_AT)
 
 
 @pytest.fixture
-def participants(engine_svc):
-    requester = engine_svc.create_participant("requester", Decimal("10000"))
-    mm1 = engine_svc.create_participant("mm_alpha", Decimal("10000"))
-    mm2 = engine_svc.create_participant("mm_beta", Decimal("10000"))
+def participants(engine):
+    requester = engine.create_participant("requester", Decimal("10000"))
+    mm1 = engine.create_participant("mm_alpha", Decimal("10000"))
+    mm2 = engine.create_participant("mm_beta", Decimal("10000"))
     return {"requester": requester, "mm1": mm1, "mm2": mm2}
