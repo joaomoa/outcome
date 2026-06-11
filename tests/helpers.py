@@ -37,5 +37,6 @@ def quote_both_legs(eng: RfqEngine, legs, mm_id, price_a, price_b):
 def resolve_yes(eng: RfqEngine, legs):
     eng.initiate_resolution(legs[0]["request_id"])
     for leg in legs:
-        eng.resolve_leg(leg["id"], ResolutionOutcome.YES)
+        eng.propose_outcome(leg["id"], ResolutionOutcome.YES)
+        eng.finalize_leg(leg["id"])
     eng.settle_request(legs[0]["request_id"])

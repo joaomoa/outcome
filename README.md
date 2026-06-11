@@ -36,12 +36,13 @@ No ORM. SQL lives in `queries.py` and `ledger.py`; `engine.py` is rules and flow
 
 - **Response deadline** — requester sets at submit (`response_deadline_seconds`)
 - **Accept window** — venue policy (`ACCEPT_WINDOW_SECONDS`)
+- **Dispute window** — venue policy (`DISPUTE_WINDOW_SECONDS`); set on `propose_outcome`, enforced in `dispute_leg`, auto-finalized by `process_resolution_expirations`
 
 ## Flow
 
-`submit_request` → `submit_quote` → `run_matching` → `accept` → `initiate_resolution` → `resolve_leg` → `settle_request`
+`submit_request` → `submit_quote` → `run_matching` → `accept` → `initiate_resolution` → `propose_outcome` → `finalize_leg` → `settle_request`
 
-Resolve each leg: `engine.resolve_leg(leg_id, ResolutionOutcome.YES)`
+Propose then finalize each leg: `engine.propose_outcome(leg_id, ResolutionOutcome.YES)` then `engine.finalize_leg(leg_id)`. Disputes (`dispute_leg`) are only valid while a leg is `proposed`; challenged legs need arbitrator `resolve_leg`.
 
 ## Docs
 

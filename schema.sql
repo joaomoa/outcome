@@ -57,5 +57,6 @@ CREATE TABLE resolutions (
     leg_id UUID NOT NULL UNIQUE REFERENCES legs(id),
     status TEXT NOT NULL,
     outcome TEXT,
+    dispute_deadline TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

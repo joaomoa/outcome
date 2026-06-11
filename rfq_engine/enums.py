@@ -22,9 +22,12 @@ class QuoteStatus(StrEnum):
 
 class ResolutionStatus(StrEnum):
     PENDING = "pending"
+    PROPOSED = "proposed"
+    DISPUTED = "disputed"
     RESOLVED = "resolved"
 
 
 class ResolutionOutcome(StrEnum):
     YES = "yes"
     NO = "no"
+    VOID = "void"

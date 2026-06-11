@@ -128,3 +128,29 @@ class Ledger:
             )
         else:
             raise ValueError(f"unknown winner {winner_id}")
+
+    def refund_escrow(
+        self,
+        requester_id: UUID,
+        requester_locked: Decimal,
+        mm_id: UUID,
+        mm_locked: Decimal,
+    ) -> None:
+        self.conn.execute(
+            """
+            UPDATE balances
+            SET locked = locked - %(amount)s,
+                available = available + %(amount)s
+            WHERE participant_id = %(participant_id)s
+            """,
+            {"participant_id": requester_id, "amount": requester_locked},
+        )
+        self.conn.execute(
+            """
+            UPDATE balances
+            SET locked = locked - %(amount)s,
+                available = available + %(amount)s
+            WHERE participant_id = %(participant_id)s
+            """,
+            {"participant_id": mm_id, "amount": mm_locked},
+        )

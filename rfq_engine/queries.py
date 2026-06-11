@@ -278,6 +278,45 @@ class Queries:
             {"leg_id": leg_id, "status": status.value, "outcome": outcome},
         )
 
+    def propose_resolution(
+        self,
+        leg_id: UUID,
+        outcome: str,
+        dispute_deadline: datetime,
+    ) -> None:
+        self.conn.execute(
+            """
+            UPDATE resolutions
+            SET status = %(status)s, outcome = %(outcome)s, dispute_deadline = %(deadline)s
+            WHERE leg_id = %(leg_id)s
+            """,
+            {
+                "leg_id": leg_id,
+                "status": ResolutionStatus.PROPOSED.value,
+                "outcome": outcome,
+                "deadline": dispute_deadline,
+            },
+        )
+
+    def list_expired_proposed_resolutions(self, at: datetime) -> list[dict]:
+        return self.conn.execute(
+            """
+            SELECT leg_id, outcome FROM resolutions
+            WHERE status = %(status)s AND dispute_deadline < %(at)s
+            FOR UPDATE
+            """,
+            {"status": ResolutionStatus.PROPOSED.value, "at": at},
+        ).fetchall()
+
+    def update_resolution_status(self, leg_id: UUID, status: ResolutionStatus) -> None:
+        self.conn.execute(
+            """
+            UPDATE resolutions SET status = %(status)s
+            WHERE leg_id = %(leg_id)s
+            """,
+            {"leg_id": leg_id, "status": status.value},
+        )
+
     def get_escrow(self, leg_id: UUID) -> dict | None:
         return self.conn.execute(
             "SELECT * FROM escrows WHERE leg_id = %(leg_id)s",

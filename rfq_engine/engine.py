@@ -9,6 +9,7 @@ import psycopg
 from rfq_engine.enums import QuoteStatus, RequestStatus, ResolutionOutcome, ResolutionStatus
 from rfq_engine.errors import (
     ConflictError,
+    DisputeWindowExpiredError,
     InvalidStateError,
     NotFoundError,
     QuoteExpiredError,
@@ -17,6 +18,7 @@ from rfq_engine.ledger import Ledger
 from rfq_engine.queries import Queries
 
 ACCEPT_WINDOW_SECONDS = 300.0
+DISPUTE_WINDOW_SECONDS = 2 * 3600.0  # 2 hours (Polymarket-style)
 
 
 @dataclass
@@ -198,6 +200,18 @@ class RfqEngine:
                 expired.append(row["id"])
             return expired
 
+    def process_resolution_expirations(self, *, at: datetime | None = None) -> list[UUID]:
+        now = self._now(at)
+        with self.conn.transaction():
+            finalized: list[UUID] = []
+            for row in self._db.list_expired_proposed_resolutions(now):
+                leg_id = row["leg_id"]
+                outcome = ResolutionOutcome(row["outcome"])
+                self._apply_outcome(leg_id, outcome)
+                self._db.update_resolution(leg_id, ResolutionStatus.RESOLVED, outcome.value)
+                finalized.append(leg_id)
+            return finalized
+
     def initiate_resolution(self, request_id: UUID) -> None:
         with self.conn.transaction():
             req = self._db.get_request(request_id)
@@ -210,6 +224,57 @@ class RfqEngine:
                 self._db.insert_resolution(uuid.uuid4(), leg["id"])
             self._db.update_request_status(request_id, RequestStatus.RESOLVED)
 
+    def propose_outcome(
+        self,
+        leg_id: UUID,
+        outcome: ResolutionOutcome,
+        *,
+        at: datetime | None = None,
+    ) -> None:
+        now = self._now(at)
+        with self.conn.transaction():
+            res = self._db.get_resolution_for_update(leg_id)
+            if res is None:
+                raise NotFoundError(f"no resolution for leg {leg_id}")
+            if res["status"] != ResolutionStatus.PENDING.value:
+                raise InvalidStateError(
+                    f"cannot propose outcome for leg {leg_id} in status {res['status']}"
+                )
+            self._db.propose_resolution(
+                leg_id,
+                outcome.value,
+                now + timedelta(seconds=DISPUTE_WINDOW_SECONDS),
+            )
+
+    def dispute_leg(self, leg_id: UUID, *, at: datetime | None = None) -> None:
+        now = self._now(at)
+        with self.conn.transaction():
+            res = self._db.get_resolution_for_update(leg_id)
+            if res is None:
+                raise NotFoundError(f"no resolution for leg {leg_id}")
+            if res["status"] != ResolutionStatus.PROPOSED.value:
+                raise InvalidStateError(
+                    f"cannot dispute leg {leg_id} in status {res['status']}"
+                )
+            if res["dispute_deadline"] is None or now > res["dispute_deadline"]:
+                raise DisputeWindowExpiredError("dispute window expired")
+            self._db.update_resolution_status(leg_id, ResolutionStatus.DISPUTED)
+
+    def finalize_leg(self, leg_id: UUID) -> None:
+        with self.conn.transaction():
+            res = self._db.get_resolution_for_update(leg_id)
+            if res is None:
+                raise NotFoundError(f"no resolution for leg {leg_id}")
+            if res["status"] == ResolutionStatus.RESOLVED.value:
+                return
+            if res["status"] != ResolutionStatus.PROPOSED.value:
+                raise InvalidStateError(
+                    f"cannot finalize leg {leg_id} in status {res['status']}"
+                )
+            outcome = ResolutionOutcome(res["outcome"])
+            self._apply_outcome(leg_id, outcome)
+            self._db.update_resolution(leg_id, ResolutionStatus.RESOLVED, outcome.value)
+
     def resolve_leg(self, leg_id: UUID, outcome: ResolutionOutcome) -> None:
         with self.conn.transaction():
             res = self._db.get_resolution_for_update(leg_id)
@@ -217,20 +282,11 @@ class RfqEngine:
                 raise NotFoundError(f"no resolution for leg {leg_id}")
             if res["status"] == ResolutionStatus.RESOLVED.value:
                 return
-
-            escrow = self._db.get_escrow(leg_id)
-            winner = (
-                escrow["requester_id"]
-                if outcome == ResolutionOutcome.YES
-                else escrow["mm_id"]
-            )
-            self._ledger.payout(
-                escrow["requester_id"],
-                escrow["requester_locked"],
-                escrow["mm_id"],
-                escrow["mm_locked"],
-                winner,
-            )
+            if res["status"] != ResolutionStatus.DISPUTED.value:
+                raise InvalidStateError(
+                    f"cannot resolve leg {leg_id} in status {res['status']}"
+                )
+            self._apply_outcome(leg_id, outcome)
             self._db.update_resolution(leg_id, ResolutionStatus.RESOLVED, outcome.value)
 
     def settle_request(self, request_id: UUID) -> None:
@@ -246,6 +302,29 @@ class RfqEngine:
         if status is None:
             raise NotFoundError(f"request {request_id} not found")
         return RequestStatus(status)
+
+    def _apply_outcome(self, leg_id: UUID, outcome: ResolutionOutcome) -> None:
+        escrow = self._db.get_escrow(leg_id)
+        if outcome == ResolutionOutcome.VOID:
+            self._ledger.refund_escrow(
+                escrow["requester_id"],
+                escrow["requester_locked"],
+                escrow["mm_id"],
+                escrow["mm_locked"],
+            )
+        else:
+            winner = (
+                escrow["requester_id"]
+                if outcome == ResolutionOutcome.YES
+                else escrow["mm_id"]
+            )
+            self._ledger.payout(
+                escrow["requester_id"],
+                escrow["requester_locked"],
+                escrow["mm_id"],
+                escrow["mm_locked"],
+                winner,
+            )
 
     def _release_quotes(self, request_id: UUID, final_status: QuoteStatus) -> None:
         for leg in self._db.list_leg_ids(request_id):

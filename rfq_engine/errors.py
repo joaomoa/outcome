@@ -18,5 +18,9 @@ class NotFoundError(RFQError):
     pass
 
 
+class DisputeWindowExpiredError(RFQError):
+    pass
+
+
 class ConflictError(RFQError):
     pass
