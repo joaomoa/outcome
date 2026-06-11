@@ -19,17 +19,12 @@ def test_multileg_fails_when_one_leg_unquoted(engine, participants):
     assert engine.run_matching(request_id) == RequestStatus.FAILED
     assert engine.get_request_status(request_id) == RequestStatus.FAILED
 
-    leg_ids = [leg["id"] for leg in legs]
     quotes = engine.conn.execute(
         "SELECT * FROM quotes WHERE leg_id = ANY(%(ids)s)",
-        {"ids": leg_ids},
+        {"ids": [leg["id"] for leg in legs]},
     ).fetchall()
-    assert all(q["status"] == QuoteStatus.ACTIVE.value for q in quotes)
-    selected = engine.conn.execute(
-        "SELECT * FROM quotes WHERE leg_id = ANY(%(ids)s) AND status = %(status)s",
-        {"ids": leg_ids, "status": QuoteStatus.SELECTED.value},
-    ).fetchall()
-    assert not selected
+    assert len(quotes) == 1
+    assert quotes[0]["status"] == QuoteStatus.ACTIVE.value
 
     mm_after = get_balance(engine.conn, participants["mm1"])
     assert mm_after["reserved"] == expected_reserved
