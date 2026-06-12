@@ -34,9 +34,19 @@ def quote_both_legs(eng: RfqEngine, legs, mm_id, price_a, price_b):
     eng.submit_quote(legs[1]["id"], mm_id, price_b, Decimal("200"), expires_in_seconds=7200)
 
 
+def resolve_parlay(eng: RfqEngine, request_id: UUID, legs, component_outcomes: list[ResolutionOutcome]):
+    eng.initiate_resolution(request_id)
+    for leg, outcome in zip(legs, component_outcomes):
+        eng.report_leg_outcome(leg["id"], outcome)
+    eng.propose_outcome(request_id)
+    eng.finalize_request(request_id)
+    eng.settle_request(request_id)
+
+
 def resolve_yes(eng: RfqEngine, legs):
-    eng.initiate_resolution(legs[0]["request_id"])
-    for leg in legs:
-        eng.propose_outcome(leg["id"], ResolutionOutcome.YES)
-        eng.finalize_leg(leg["id"])
-    eng.settle_request(legs[0]["request_id"])
+    resolve_parlay(
+        eng,
+        legs[0]["request_id"],
+        legs,
+        [ResolutionOutcome.YES] * len(legs),
+    )

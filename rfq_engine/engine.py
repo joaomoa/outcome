@@ -205,11 +205,13 @@ class RfqEngine:
         with self.conn.transaction():
             finalized: list[UUID] = []
             for row in self._db.list_expired_proposed_resolutions(now):
-                leg_id = row["leg_id"]
+                request_id = row["request_id"]
                 outcome = ResolutionOutcome(row["outcome"])
-                self._apply_outcome(leg_id, outcome)
-                self._db.update_resolution(leg_id, ResolutionStatus.RESOLVED, outcome.value)
-                finalized.append(leg_id)
+                self._apply_parlay_outcome(request_id, outcome)
+                self._db.update_resolution(
+                    request_id, ResolutionStatus.RESOLVED, outcome.value
+                )
+                finalized.append(request_id)
             return finalized
 
     def initiate_resolution(self, request_id: UUID) -> None:
@@ -220,81 +222,91 @@ class RfqEngine:
             if req["status"] != RequestStatus.ESCROW_LOCKED.value:
                 raise InvalidStateError(f"cannot resolve in status {req['status']}")
 
-            for leg in self._db.list_leg_ids(request_id):
-                self._db.insert_resolution(uuid.uuid4(), leg["id"])
+            self._db.insert_resolution(uuid.uuid4(), request_id)
             self._db.update_request_status(request_id, RequestStatus.RESOLVED)
 
-    def propose_outcome(
-        self,
-        leg_id: UUID,
-        outcome: ResolutionOutcome,
-        *,
-        at: datetime | None = None,
-    ) -> None:
+    def report_leg_outcome(self, leg_id: UUID, outcome: ResolutionOutcome) -> None:
+        with self.conn.transaction():
+            leg = self._db.get_leg(leg_id)
+            if leg is None:
+                raise NotFoundError(f"leg {leg_id} not found")
+            req = self._db.get_request(leg["request_id"])
+            if req is None or req["status"] != RequestStatus.RESOLVED.value:
+                raise InvalidStateError("cannot report leg outcome outside resolution")
+            res = self._db.get_resolution(leg["request_id"])
+            if res is None or res["status"] != ResolutionStatus.PENDING.value:
+                raise InvalidStateError(
+                    f"cannot report leg outcome in resolution status {res['status'] if res else 'none'}"
+                )
+            if leg["component_outcome"] is not None:
+                raise InvalidStateError(f"leg {leg_id} already has component outcome")
+            self._db.set_leg_component_outcome(leg_id, outcome.value)
+
+    def propose_outcome(self, request_id: UUID, *, at: datetime | None = None) -> None:
         now = self._now(at)
         with self.conn.transaction():
-            res = self._db.get_resolution_for_update(leg_id)
+            res = self._db.get_resolution_for_update(request_id)
             if res is None:
-                raise NotFoundError(f"no resolution for leg {leg_id}")
+                raise NotFoundError(f"no resolution for request {request_id}")
             if res["status"] != ResolutionStatus.PENDING.value:
                 raise InvalidStateError(
-                    f"cannot propose outcome for leg {leg_id} in status {res['status']}"
+                    f"cannot propose outcome for request {request_id} in status {res['status']}"
                 )
+            outcome = self._compute_parlay_outcome(request_id)
             self._db.propose_resolution(
-                leg_id,
+                request_id,
                 outcome.value,
                 now + timedelta(seconds=DISPUTE_WINDOW_SECONDS),
             )
 
-    def dispute_leg(self, leg_id: UUID, *, at: datetime | None = None) -> None:
+    def dispute_request(self, request_id: UUID, *, at: datetime | None = None) -> None:
         now = self._now(at)
         with self.conn.transaction():
-            res = self._db.get_resolution_for_update(leg_id)
+            res = self._db.get_resolution_for_update(request_id)
             if res is None:
-                raise NotFoundError(f"no resolution for leg {leg_id}")
+                raise NotFoundError(f"no resolution for request {request_id}")
             if res["status"] != ResolutionStatus.PROPOSED.value:
                 raise InvalidStateError(
-                    f"cannot dispute leg {leg_id} in status {res['status']}"
+                    f"cannot dispute request {request_id} in status {res['status']}"
                 )
             if res["dispute_deadline"] is None or now > res["dispute_deadline"]:
                 raise DisputeWindowExpiredError("dispute window expired")
-            self._db.update_resolution_status(leg_id, ResolutionStatus.DISPUTED)
+            self._db.update_resolution_status(request_id, ResolutionStatus.DISPUTED)
 
-    def finalize_leg(self, leg_id: UUID) -> None:
+    def finalize_request(self, request_id: UUID) -> None:
         with self.conn.transaction():
-            res = self._db.get_resolution_for_update(leg_id)
+            res = self._db.get_resolution_for_update(request_id)
             if res is None:
-                raise NotFoundError(f"no resolution for leg {leg_id}")
+                raise NotFoundError(f"no resolution for request {request_id}")
             if res["status"] == ResolutionStatus.RESOLVED.value:
                 return
             if res["status"] != ResolutionStatus.PROPOSED.value:
                 raise InvalidStateError(
-                    f"cannot finalize leg {leg_id} in status {res['status']}"
+                    f"cannot finalize request {request_id} in status {res['status']}"
                 )
             outcome = ResolutionOutcome(res["outcome"])
-            self._apply_outcome(leg_id, outcome)
-            self._db.update_resolution(leg_id, ResolutionStatus.RESOLVED, outcome.value)
+            self._apply_parlay_outcome(request_id, outcome)
+            self._db.update_resolution(request_id, ResolutionStatus.RESOLVED, outcome.value)
 
-    def resolve_leg(self, leg_id: UUID, outcome: ResolutionOutcome) -> None:
+    def resolve_request(self, request_id: UUID, outcome: ResolutionOutcome) -> None:
         with self.conn.transaction():
-            res = self._db.get_resolution_for_update(leg_id)
+            res = self._db.get_resolution_for_update(request_id)
             if res is None:
-                raise NotFoundError(f"no resolution for leg {leg_id}")
+                raise NotFoundError(f"no resolution for request {request_id}")
             if res["status"] == ResolutionStatus.RESOLVED.value:
                 return
             if res["status"] != ResolutionStatus.DISPUTED.value:
                 raise InvalidStateError(
-                    f"cannot resolve leg {leg_id} in status {res['status']}"
+                    f"cannot resolve request {request_id} in status {res['status']}"
                 )
-            self._apply_outcome(leg_id, outcome)
-            self._db.update_resolution(leg_id, ResolutionStatus.RESOLVED, outcome.value)
+            self._apply_parlay_outcome(request_id, outcome)
+            self._db.update_resolution(request_id, ResolutionStatus.RESOLVED, outcome.value)
 
     def settle_request(self, request_id: UUID) -> None:
         with self.conn.transaction():
-            for leg in self._db.list_leg_ids(request_id):
-                res = self._db.get_resolution(leg["id"])
-                if res is None or res["status"] != ResolutionStatus.RESOLVED.value:
-                    raise InvalidStateError(f"leg {leg['id']} not resolved")
+            res = self._db.get_resolution(request_id)
+            if res is None or res["status"] != ResolutionStatus.RESOLVED.value:
+                raise InvalidStateError(f"request {request_id} not resolved")
             self._db.update_request_status(request_id, RequestStatus.SETTLED)
 
     def get_request_status(self, request_id: UUID) -> RequestStatus:
@@ -303,28 +315,45 @@ class RfqEngine:
             raise NotFoundError(f"request {request_id} not found")
         return RequestStatus(status)
 
-    def _apply_outcome(self, leg_id: UUID, outcome: ResolutionOutcome) -> None:
-        escrow = self._db.get_escrow(leg_id)
-        if outcome == ResolutionOutcome.VOID:
-            self._ledger.refund_escrow(
-                escrow["requester_id"],
-                escrow["requester_locked"],
-                escrow["mm_id"],
-                escrow["mm_locked"],
-            )
-        else:
-            winner = (
-                escrow["requester_id"]
-                if outcome == ResolutionOutcome.YES
-                else escrow["mm_id"]
-            )
-            self._ledger.payout(
-                escrow["requester_id"],
-                escrow["requester_locked"],
-                escrow["mm_id"],
-                escrow["mm_locked"],
-                winner,
-            )
+    def _compute_parlay_outcome(self, request_id: UUID) -> ResolutionOutcome:
+        legs = self._db.list_legs(request_id)
+        if not legs:
+            raise InvalidStateError(f"request {request_id} has no legs")
+        components: list[ResolutionOutcome] = []
+        for leg in legs:
+            if leg["component_outcome"] is None:
+                raise InvalidStateError(
+                    f"leg {leg['id']} has no component outcome; parlay cannot be proposed yet"
+                )
+            components.append(ResolutionOutcome(leg["component_outcome"]))
+        if ResolutionOutcome.VOID in components:
+            return ResolutionOutcome.VOID
+        if all(c == ResolutionOutcome.YES for c in components):
+            return ResolutionOutcome.YES
+        return ResolutionOutcome.NO
+
+    def _apply_parlay_outcome(self, request_id: UUID, outcome: ResolutionOutcome) -> None:
+        for escrow in self._db.list_escrows_for_request(request_id):
+            if outcome == ResolutionOutcome.VOID:
+                self._ledger.refund_escrow(
+                    escrow["requester_id"],
+                    escrow["requester_locked"],
+                    escrow["mm_id"],
+                    escrow["mm_locked"],
+                )
+            else:
+                winner = (
+                    escrow["requester_id"]
+                    if outcome == ResolutionOutcome.YES
+                    else escrow["mm_id"]
+                )
+                self._ledger.payout(
+                    escrow["requester_id"],
+                    escrow["requester_locked"],
+                    escrow["mm_id"],
+                    escrow["mm_locked"],
+                    winner,
+                )
 
     def _release_quotes(self, request_id: UUID, final_status: QuoteStatus) -> None:
         for leg in self._db.list_leg_ids(request_id):

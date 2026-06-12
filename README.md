@@ -36,13 +36,13 @@ No ORM. SQL lives in `queries.py` and `ledger.py`; `engine.py` is rules and flow
 
 - **Response deadline** — requester sets at submit (`response_deadline_seconds`)
 - **Accept window** — venue policy (`ACCEPT_WINDOW_SECONDS`)
-- **Dispute window** — venue policy (`DISPUTE_WINDOW_SECONDS`); set on `propose_outcome`, enforced in `dispute_leg`, auto-finalized by `process_resolution_expirations`
+- **Dispute window** — venue policy (`DISPUTE_WINDOW_SECONDS`); set on `propose_outcome`, enforced in `dispute_request`, auto-finalized by `process_resolution_expirations`
 
 ## Flow
 
-`submit_request` → `submit_quote` → `run_matching` → `accept` → `initiate_resolution` → `propose_outcome` → `finalize_leg` → `settle_request`
+`submit_request` → `submit_quote` → `run_matching` → `accept` → `initiate_resolution` → `report_leg_outcome` (all legs) → `propose_outcome` → `finalize_request` → `settle_request`
 
-Propose then finalize each leg: `engine.propose_outcome(leg_id, ResolutionOutcome.YES)` then `engine.finalize_leg(leg_id)`. Disputes (`dispute_leg`) are only valid while a leg is `proposed`; challenged legs need arbitrator `resolve_leg`.
+Multi-leg requests are parlays: YES only if every leg is YES. Report each leg's component outcome, then `propose_outcome(request_id)` computes the parlay. Disputes (`dispute_request`) apply to the whole request while `proposed`.
 
 ## Docs
 

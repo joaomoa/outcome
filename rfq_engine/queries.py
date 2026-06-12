@@ -242,45 +242,45 @@ class Queries:
             {"status": RequestStatus.PRESENTED.value, "at": at},
         ).fetchall()
 
-    def insert_resolution(self, resolution_id: UUID, leg_id: UUID) -> None:
+    def insert_resolution(self, resolution_id: UUID, request_id: UUID) -> None:
         self.conn.execute(
             """
-            INSERT INTO resolutions (id, leg_id, status)
-            VALUES (%(id)s, %(leg_id)s, %(status)s)
+            INSERT INTO resolutions (id, request_id, status)
+            VALUES (%(id)s, %(request_id)s, %(status)s)
             """,
             {
                 "id": resolution_id,
-                "leg_id": leg_id,
+                "request_id": request_id,
                 "status": ResolutionStatus.PENDING.value,
             },
         )
 
-    def get_resolution_for_update(self, leg_id: UUID) -> dict | None:
+    def get_resolution_for_update(self, request_id: UUID) -> dict | None:
         return self.conn.execute(
-            "SELECT * FROM resolutions WHERE leg_id = %(leg_id)s FOR UPDATE",
-            {"leg_id": leg_id},
+            "SELECT * FROM resolutions WHERE request_id = %(request_id)s FOR UPDATE",
+            {"request_id": request_id},
         ).fetchone()
 
-    def get_resolution(self, leg_id: UUID) -> dict | None:
+    def get_resolution(self, request_id: UUID) -> dict | None:
         return self.conn.execute(
-            "SELECT status FROM resolutions WHERE leg_id = %(leg_id)s",
-            {"leg_id": leg_id},
+            "SELECT * FROM resolutions WHERE request_id = %(request_id)s",
+            {"request_id": request_id},
         ).fetchone()
 
     def update_resolution(
-        self, leg_id: UUID, status: ResolutionStatus, outcome: str
+        self, request_id: UUID, status: ResolutionStatus, outcome: str
     ) -> None:
         self.conn.execute(
             """
             UPDATE resolutions SET status = %(status)s, outcome = %(outcome)s
-            WHERE leg_id = %(leg_id)s
+            WHERE request_id = %(request_id)s
             """,
-            {"leg_id": leg_id, "status": status.value, "outcome": outcome},
+            {"request_id": request_id, "status": status.value, "outcome": outcome},
         )
 
     def propose_resolution(
         self,
-        leg_id: UUID,
+        request_id: UUID,
         outcome: str,
         dispute_deadline: datetime,
     ) -> None:
@@ -288,10 +288,10 @@ class Queries:
             """
             UPDATE resolutions
             SET status = %(status)s, outcome = %(outcome)s, dispute_deadline = %(deadline)s
-            WHERE leg_id = %(leg_id)s
+            WHERE request_id = %(request_id)s
             """,
             {
-                "leg_id": leg_id,
+                "request_id": request_id,
                 "status": ResolutionStatus.PROPOSED.value,
                 "outcome": outcome,
                 "deadline": dispute_deadline,
@@ -301,21 +301,40 @@ class Queries:
     def list_expired_proposed_resolutions(self, at: datetime) -> list[dict]:
         return self.conn.execute(
             """
-            SELECT leg_id, outcome FROM resolutions
+            SELECT request_id, outcome FROM resolutions
             WHERE status = %(status)s AND dispute_deadline < %(at)s
             FOR UPDATE
             """,
             {"status": ResolutionStatus.PROPOSED.value, "at": at},
         ).fetchall()
 
-    def update_resolution_status(self, leg_id: UUID, status: ResolutionStatus) -> None:
+    def update_resolution_status(self, request_id: UUID, status: ResolutionStatus) -> None:
         self.conn.execute(
             """
             UPDATE resolutions SET status = %(status)s
-            WHERE leg_id = %(leg_id)s
+            WHERE request_id = %(request_id)s
             """,
-            {"leg_id": leg_id, "status": status.value},
+            {"request_id": request_id, "status": status.value},
         )
+
+    def set_leg_component_outcome(self, leg_id: UUID, outcome: str) -> None:
+        self.conn.execute(
+            """
+            UPDATE legs SET component_outcome = %(outcome)s
+            WHERE id = %(leg_id)s
+            """,
+            {"leg_id": leg_id, "outcome": outcome},
+        )
+
+    def list_escrows_for_request(self, request_id: UUID) -> list[dict]:
+        return self.conn.execute(
+            """
+            SELECT e.* FROM escrows e
+            JOIN legs l ON l.id = e.leg_id
+            WHERE l.request_id = %(request_id)s
+            """,
+            {"request_id": request_id},
+        ).fetchall()
 
     def get_escrow(self, leg_id: UUID) -> dict | None:
         return self.conn.execute(

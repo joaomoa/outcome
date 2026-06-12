@@ -25,7 +25,8 @@ CREATE TABLE legs (
     request_id UUID NOT NULL REFERENCES requests(id),
     contract_description TEXT NOT NULL,
     notional NUMERIC(20, 8) NOT NULL,
-    leg_index INT NOT NULL
+    leg_index INT NOT NULL,
+    component_outcome TEXT
 );
 
 CREATE TABLE quotes (
@@ -54,7 +55,7 @@ CREATE TABLE escrows (
 
 CREATE TABLE resolutions (
     id UUID PRIMARY KEY,
-    leg_id UUID NOT NULL UNIQUE REFERENCES legs(id),
+    request_id UUID NOT NULL UNIQUE REFERENCES requests(id),
     status TEXT NOT NULL,
     outcome TEXT,
     dispute_deadline TIMESTAMPTZ,

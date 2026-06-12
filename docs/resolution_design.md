@@ -1,88 +1,93 @@
 # Resolution Design
 
-## Per-leg resolution states
+Multi-leg requests are **parlays**: one combined bet across all legs. The requester buys YES on the parlay — it pays only if every leg hits YES. Otherwise the parlay is NO.
+
+Example: leg 1 = Portugal beats Nigeria, leg 2 = Spain beats Brazil. Parlay YES means both results are YES. Parlay NO means anything else (one loss, both losses, etc.).
+
+## Request-level resolution states
+
+Resolution is one state machine per **request**, not per leg. Legs only accumulate **component outcomes** (did Portugal win? did Spain win?) while the parlay waits.
 
 ```mermaid
 stateDiagram-v2
     direction LR
     [*] --> Pending: initiate_resolution
     Pending --> Proposed: propose_outcome
-    Proposed --> Resolved: finalize_leg
-    Proposed --> Disputed: dispute_leg
-    Disputed --> Resolved: resolve_leg
+    Proposed --> Resolved: finalize_request
+    Proposed --> Disputed: dispute_request
+    Disputed --> Resolved: resolve_request
 ```
 
 | Status | Meaning | Disputes open? | Funds move? |
 |--------|---------|----------------|-------------|
-| `pending` | Event not yet reported / no outcome proposed | no | no |
-| `proposed` | Authority proposed YES, NO, or VOID | **yes** | no |
+| `pending` | Collecting leg component outcomes | no | no |
+| `proposed` | Parlay outcome proposed (computed from legs) | **yes** | no |
 | `disputed` | Counterparty challenged the proposal | no (arbitrator decides) | no |
-| `resolved` | Terminal outcome applied | no | yes |
+| `resolved` | Terminal parlay outcome applied to all escrows | no | yes |
 
-**Rule:** locked funds never move until a leg reaches `resolved`. Pending, proposed, and disputed legs leave both sides' locked balances untouched.
+**Rule:** locked funds never move until the request reaches `resolved`. All legs settle together in one payout.
+
+## Parlay outcome logic
+
+Once every leg has a `component_outcome` (`YES`, `NO`, or `VOID`):
+
+| Leg components | Parlay outcome |
+|----------------|----------------|
+| all `YES` | `YES` |
+| any `VOID` | `VOID` (refund entire parlay) |
+| otherwise | `NO` |
+
+`propose_outcome(request_id)` computes this and moves the request to `proposed`. You cannot propose until **all** legs are reported — if Spain's match hasn't finished, the parlay waits.
 
 ## Fund states through resolution
 
 | Phase | Requester | MM |
 |-------|-----------|-----|
-| Escrow locked | `locked` = premium | `locked` = collateral |
+| Escrow locked | `locked` = sum of premiums | `locked` = sum of collateral |
 | Pending / proposed / disputed | unchanged | unchanged |
-| Resolved YES (buyer) | `locked` → `available` (wins full pot) | forfeits `locked` |
-| Resolved NO (buyer) | forfeits `locked` | `locked` → `available` (wins full pot) |
-| Resolved VOID (ambiguous) | `locked` → `available` (refund) | `locked` → `available` (refund) |
+| Resolved YES (parlay hits) | all `locked` → `available` (wins all pots) | forfeits all `locked` |
+| Resolved NO (parlay misses) | forfeits all `locked` | all `locked` → `available` (wins all pots) |
+| Resolved VOID | all stakes refunded | all stakes refunded |
 
 ## Happy path (unchallenged proposal)
 
-1. `initiate_resolution` — each leg → `pending`
-2. `propose_outcome(leg_id, YES|NO)` — leg → `proposed`, outcome stored, `dispute_deadline` set
-3. Dispute window passes with no challenge
-4. `finalize_leg(leg_id)` or `process_resolution_expirations()` — applies the proposed outcome, leg → `resolved`
-5. `settle_request` once all legs are `resolved`
+1. `initiate_resolution(request_id)` — request → `pending`
+2. `report_leg_outcome(leg_id, YES|NO|VOID)` for each leg as events complete
+3. `propose_outcome(request_id)` — computes parlay, sets `dispute_deadline`, → `proposed`
+4. Dispute window passes with no challenge
+5. `finalize_request(request_id)` or `process_resolution_expirations()` — pays out, → `resolved`
+6. `settle_request(request_id)`
 
-No oracle lookup layer in the MVP — the caller supplies the proposed outcome directly.
+No oracle lookup layer in the MVP — the caller supplies component outcomes directly.
 
 ## Dispute window
 
-Venue policy constant: `DISPUTE_WINDOW_SECONDS` (2 hours, Polymarket-style — longer than the accept window so counterparties can review the proposed outcome).
+Venue policy constant: `DISPUTE_WINDOW_SECONDS` (2 hours, Polymarket-style).
 
-On `propose_outcome`, the engine stores `dispute_deadline = now + DISPUTE_WINDOW_SECONDS` on the resolution row. While `now <= dispute_deadline` and status is `proposed`, either counterparty may call `dispute_leg`. After the deadline, disputes are rejected with `DisputeWindowExpiredError`.
+On `propose_outcome`, the engine stores `dispute_deadline = now + DISPUTE_WINDOW_SECONDS`. While `now <= dispute_deadline` and status is `proposed`, either counterparty may call `dispute_request`. After the deadline, disputes are rejected with `DisputeWindowExpiredError`.
 
-A worker calls `process_resolution_expirations(at)` to auto-finalize unchallenged proposals whose `dispute_deadline` has passed. Manual `finalize_leg` is also allowed before or after the deadline (still requires `proposed` status).
+A worker calls `process_resolution_expirations(at)` to auto-finalize unchallenged proposals past `dispute_deadline`.
 
 ## Disputed resolution
 
-Disputes are only valid while a leg is `proposed`. Either counterparty calls `dispute_leg(leg_id)` to challenge the proposal.
+Disputes challenge the **parlay proposal**, not individual legs in isolation. Either counterparty calls `dispute_request(request_id)` while `proposed`.
 
-| Step | Leg status | Funds |
-|------|------------|-------|
-| `propose_outcome` | `pending` → `proposed` | locked |
-| `dispute_leg` | `proposed` → `disputed` | locked (no movement) |
-| arbitrator `resolve_leg(outcome)` | `disputed` → `resolved` | payout or refund |
+| Step | Request status | Funds |
+|------|----------------|-------|
+| all legs reported + `propose_outcome` | `pending` → `proposed` | locked |
+| `dispute_request` | `proposed` → `disputed` | locked |
+| arbitrator `resolve_request(outcome)` | `disputed` → `resolved` | payout or refund |
 
-While disputed:
-
-- Both parties' locked amounts stay frozen.
-- `settle_request` is blocked.
-- An external arbitrator calls `resolve_leg` with the final YES/NO/VOID (may differ from the proposal).
-
-`dispute_leg` fails on `pending` (nothing to challenge yet) and on `disputed`/`resolved` (already past the dispute window).
+While disputed, all escrows stay frozen. An arbitrator calls `resolve_request` with the final parlay YES/NO/VOID (may override the computed proposal).
 
 ## Delayed resolution
 
-If the underlying event has not occurred or the oracle has not reported, the leg stays `pending`. No proposal means no dispute window and no payout.
-
-Production hardening would add a `resolution_deadline` policy (e.g. auto-propose `VOID` after N days), but the invariant holds: **no payout without reaching `resolved`**.
+If any leg's event has not occurred, that leg has no `component_outcome` and the parlay cannot be proposed. Capital stays locked across **all** legs until the last event is reported and the parlay resolves.
 
 ## Ambiguous contract wording
 
-When the contract cannot map to YES or NO, the authority proposes `VOID`:
+If any leg's component is `VOID` (unresolvable contract), the parlay outcome is `VOID` and all escrows are refunded. The whole parlay is void — legs do not settle independently.
 
-```
-propose_outcome(leg_id, ResolutionOutcome.VOID)
-```
+## Multi-leg invariant
 
-If unchallenged, `finalize_leg` refunds both parties via `refund_escrow`. If disputed, the arbitrator confirms or overrides with `resolve_leg(leg_id, VOID)`.
-
-## Multi-leg
-
-Each leg moves through the state machine independently. One leg can be `disputed` while siblings are already `resolved`; `settle_request` waits until all legs are terminal.
+**Legs never resolve or pay out independently.** One leg cannot be `disputed` while another is already `resolved`. The request waits until every leg is reported, then proposes, disputes, and finalizes as a single unit.

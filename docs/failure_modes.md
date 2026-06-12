@@ -22,7 +22,7 @@
 - **Response deadline auto-fail:** production would run a worker to fail quoting requests past `response_deadline` and release quotes.
 - **Quote withdrawal:** MM cannot cancel quote without an explicit `withdraw_quote` (not implemented); reservations held until reject/expiry/accept.
 - **Resolution deadline:** legs stuck in `pending` would eventually auto-propose `VOID` or escalate to `disputed` per venue policy (see `docs/resolution_design.md`).
-- **Dispute window expiry:** `process_resolution_expirations` auto-finalizes unchallenged `proposed` legs past `dispute_deadline`.
+- **Dispute window expiry:** `process_resolution_expirations` auto-finalizes unchallenged `proposed` parlays past `dispute_deadline`.
 
 ## Capital leak prevention
 

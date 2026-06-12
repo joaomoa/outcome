@@ -36,7 +36,7 @@ stateDiagram-v2
 | Presented | Expired | `process_expirations` | System |
 | Presented | Failed | `accept` with expired quote | System |
 | EscrowLocked | Resolved | `initiate_resolution` | System |
-| Resolved | Settled | `settle_request` after all legs resolved | System |
+| Resolved | Settled | `settle_request` after parlay resolved | System |
 
 ## Per-leg quote substates
 
