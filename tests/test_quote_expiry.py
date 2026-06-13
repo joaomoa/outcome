@@ -7,7 +7,7 @@ from rfq_engine.enums import RequestStatus
 from rfq_engine.errors import QuoteExpiredError
 
 from conftest import FIXED_AT
-from helpers import get_balance, submit_two_leg_request
+from helpers import get_balance, parlay_capital, submit_two_leg_request
 
 
 def test_accept_rejected_when_quote_expires(engine, participants):
@@ -21,8 +21,10 @@ def test_accept_rejected_when_quote_expires(engine, participants):
     )
 
     engine.run_matching(request_id)
-    reserved = Decimal("100") * Decimal("0.60") + Decimal("200") * Decimal("0.70")
-    assert get_balance(engine.conn, participants["mm1"])["reserved"] == reserved
+    _, _, collateral = parlay_capital(
+        [(Decimal("100"), Decimal("0.40")), (Decimal("200"), Decimal("0.30"))]
+    )
+    assert get_balance(engine.conn, participants["mm1"])["reserved"] == collateral
 
     with pytest.raises(QuoteExpiredError):
         engine.accept(request_id, at=FIXED_AT + timedelta(seconds=120))

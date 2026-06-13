@@ -46,7 +46,7 @@ CREATE UNIQUE INDEX uq_one_selected_per_leg ON quotes (leg_id) WHERE status = 's
 
 CREATE TABLE escrows (
     id UUID PRIMARY KEY,
-    leg_id UUID NOT NULL UNIQUE REFERENCES legs(id),
+    request_id UUID NOT NULL UNIQUE REFERENCES requests(id),
     requester_id UUID NOT NULL REFERENCES participants(id),
     mm_id UUID NOT NULL REFERENCES participants(id),
     requester_locked NUMERIC(20, 8) NOT NULL,

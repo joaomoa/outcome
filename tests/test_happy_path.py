@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from rfq_engine.enums import RequestStatus
 
-from helpers import get_balance, quote_both_legs, resolve_yes, submit_two_leg_request
+from helpers import get_balance, parlay_capital, quote_both_legs, resolve_yes, submit_two_leg_request
 
 
 def test_happy_path_two_leg_accept_and_settle(engine, participants):
@@ -11,8 +11,10 @@ def test_happy_path_two_leg_accept_and_settle(engine, participants):
 
     assert engine.run_matching(request_id) == RequestStatus.PRESENTED
 
-    reserved = Decimal("100") * Decimal("0.60") + Decimal("200") * Decimal("0.70")
-    assert get_balance(engine.conn, participants["mm1"])["reserved"] == reserved
+    _, premium, collateral = parlay_capital(
+        [(Decimal("100"), Decimal("0.40")), (Decimal("200"), Decimal("0.30"))]
+    )
+    assert get_balance(engine.conn, participants["mm1"])["reserved"] == collateral
 
     engine.accept(request_id)
     assert engine.get_request_status(request_id) == RequestStatus.ESCROW_LOCKED
@@ -20,7 +22,6 @@ def test_happy_path_two_leg_accept_and_settle(engine, participants):
     resolve_yes(engine, legs)
     assert engine.get_request_status(request_id) == RequestStatus.SETTLED
 
-    premium = Decimal("100") * Decimal("0.40") + Decimal("200") * Decimal("0.30")
     requester = get_balance(engine.conn, participants["requester"])
     mm = get_balance(engine.conn, participants["mm1"])
     assert requester["locked"] == Decimal("0")

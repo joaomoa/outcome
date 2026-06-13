@@ -8,6 +8,16 @@ from rfq_engine.enums import ResolutionOutcome
 from rfq_engine.queries import Queries
 
 
+def parlay_capital(notional_and_prices: list[tuple[Decimal, Decimal]]) -> tuple[Decimal, Decimal, Decimal]:
+    total = sum(n for n, _ in notional_and_prices)
+    price = Decimal("1")
+    for _, p in notional_and_prices:
+        price *= p
+    premium = total * price
+    collateral = total * (Decimal("1") - price)
+    return price, premium, collateral
+
+
 def get_legs(conn: psycopg.Connection, request_id: UUID) -> list[dict]:
     return Queries(conn).list_legs(request_id)
 

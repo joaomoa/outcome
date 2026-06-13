@@ -77,6 +77,41 @@ class Ledger:
         if mm is None:
             raise InsufficientFundsError("MM insufficient reserved collateral")
 
+    def lock_parlay_escrow(
+        self,
+        requester_id: UUID,
+        premium: Decimal,
+        mm_id: UUID,
+        collateral: Decimal,
+    ) -> None:
+        req = self.conn.execute(
+            """
+            UPDATE balances
+            SET available = available - %(amount)s,
+                locked = locked + %(amount)s
+            WHERE participant_id = %(participant_id)s
+              AND available >= %(amount)s
+            RETURNING participant_id
+            """,
+            {"participant_id": requester_id, "amount": premium},
+        ).fetchone()
+        if req is None:
+            raise InsufficientFundsError("requester insufficient funds")
+
+        mm = self.conn.execute(
+            """
+            UPDATE balances
+            SET available = available - %(amount)s,
+                locked = locked + %(amount)s
+            WHERE participant_id = %(participant_id)s
+              AND available >= %(amount)s
+            RETURNING participant_id
+            """,
+            {"participant_id": mm_id, "amount": collateral},
+        ).fetchone()
+        if mm is None:
+            raise InsufficientFundsError("MM insufficient collateral")
+
     def payout(
         self,
         requester_id: UUID,

@@ -130,7 +130,7 @@ def test_process_resolution_expirations_auto_finalizes(engine, participants, con
 
     req = get_balance(conn, participants["requester"])
     assert req["locked"] == Decimal("0")
-    assert req["available"] == Decimal("10190")
+    assert req["available"] == Decimal("10258")
 
 
 def test_cannot_propose_until_all_legs_reported(engine, participants, conn):
@@ -164,5 +164,5 @@ def test_parlay_no_when_one_leg_loses(engine, participants, conn):
 
     assert req["locked"] == Decimal("0")
     assert mm["locked"] == Decimal("0")
-    assert req["available"] == Decimal("9890")
-    assert mm["available"] == Decimal("10110")
+    assert req["available"] == Decimal("9958")
+    assert mm["available"] == Decimal("10042")

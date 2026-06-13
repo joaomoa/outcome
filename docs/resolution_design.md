@@ -43,7 +43,7 @@ Once every leg has a `component_outcome` (`YES`, `NO`, or `VOID`):
 
 | Phase | Requester | MM |
 |-------|-----------|-----|
-| Escrow locked | `locked` = sum of premiums | `locked` = sum of collateral |
+| Escrow locked | `locked` = `ΣNᵢ × ∏ pᵢ` (premium) | `locked` = `ΣNᵢ × (1 − ∏ pᵢ)` (collateral) |
 | Pending / proposed / disputed | unchanged | unchanged |
 | Resolved YES (parlay hits) | all `locked` → `available` (wins all pots) | forfeits all `locked` |
 | Resolved NO (parlay misses) | forfeits all `locked` | all `locked` → `available` (wins all pots) |
@@ -95,7 +95,7 @@ Multi-leg requests are parlays. Matching does **not** pick the best quote per le
 3. Select the MM with the **lowest** parlay price (best for the requester buying YES)
 4. Mark that MM's quotes `selected` and store `parlay_price` on the request
 
-Escrow still locks per-leg premium/collateral at each leg's quoted price. Settlement uses the parlay outcome across all legs together.
+Escrow locks **parlay** premium and collateral at accept: `ΣNᵢ × ∏ pᵢ` and `ΣNᵢ × (1 − ∏ pᵢ)`. One escrow row per request. MM reserve reconciles to parlay collateral once all legs are quoted.
 
 ## Multi-leg invariant
 

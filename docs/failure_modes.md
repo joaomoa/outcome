@@ -26,4 +26,4 @@
 
 ## Capital leak prevention
 
-Reservations are always tied to a `Quote` row with `reserved_amount`. Every release path (`reject`, `expire`, accept-competitor) calls `release_reservation` with the exact amount stored on the quote. Locked funds only move via `lock_escrow` after all legs pass validation.
+Reservations are always tied to a `Quote` row with `reserved_amount`. Every release path (`reject`, `expire`, accept-competitor) calls `release_reservation` with the exact amount stored on the quote. Locked funds only move via `lock_parlay_escrow` after all legs pass validation. MM reserves reconcile to parlay collateral (`ΣNᵢ × (1 − ∏ pᵢ)`) once the MM quotes every leg.

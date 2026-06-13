@@ -210,10 +210,16 @@ class Queries:
             {"ids": leg_ids},
         ).fetchall()
 
+    def update_quote_reserved_amount(self, quote_id: UUID, amount: Decimal) -> None:
+        self.conn.execute(
+            "UPDATE quotes SET reserved_amount = %(amount)s WHERE id = %(id)s",
+            {"id": quote_id, "amount": amount},
+        )
+
     def insert_escrow(
         self,
         escrow_id: UUID,
-        leg_id: UUID,
+        request_id: UUID,
         requester_id: UUID,
         mm_id: UUID,
         requester_locked: Decimal,
@@ -221,12 +227,12 @@ class Queries:
     ) -> None:
         self.conn.execute(
             """
-            INSERT INTO escrows (id, leg_id, requester_id, mm_id, requester_locked, mm_locked)
-            VALUES (%(id)s, %(leg_id)s, %(requester_id)s, %(mm_id)s, %(req)s, %(mm)s)
+            INSERT INTO escrows (id, request_id, requester_id, mm_id, requester_locked, mm_locked)
+            VALUES (%(id)s, %(request_id)s, %(requester_id)s, %(mm_id)s, %(req)s, %(mm)s)
             """,
             {
                 "id": escrow_id,
-                "leg_id": leg_id,
+                "request_id": request_id,
                 "requester_id": requester_id,
                 "mm_id": mm_id,
                 "req": requester_locked,
@@ -330,19 +336,9 @@ class Queries:
 
     def list_escrows_for_request(self, request_id: UUID) -> list[dict]:
         return self.conn.execute(
-            """
-            SELECT e.* FROM escrows e
-            JOIN legs l ON l.id = e.leg_id
-            WHERE l.request_id = %(request_id)s
-            """,
+            "SELECT * FROM escrows WHERE request_id = %(request_id)s",
             {"request_id": request_id},
         ).fetchall()
-
-    def get_escrow(self, leg_id: UUID) -> dict | None:
-        return self.conn.execute(
-            "SELECT * FROM escrows WHERE leg_id = %(leg_id)s",
-            {"leg_id": leg_id},
-        ).fetchone()
 
     def get_balance(self, participant_id: UUID) -> dict | None:
         return self.conn.execute(
