@@ -30,10 +30,8 @@ No ORM. SQL lives in `queries.py` and `ledger.py`; `engine.py` is rules and flow
 ## Capital (buy YES parlay, total notional ΣNᵢ, leg prices pᵢ)
 
 - Parlay price: `∏ pᵢ` (stored on `requests.parlay_price` at match)
-- Premium: `ΣNᵢ × ∏ pᵢ`
-- Collateral: `ΣNᵢ × (1 − ∏ pᵢ)`
-- On quote: MM reserves per-leg initially; when all legs are quoted, reserve reconciles to parlay collateral
-- On accept: one escrow row per request; premium and collateral locked from `available`
+- Premium: `ΣNᵢ × ∏ pᵢ`; collateral: `ΣNᵢ × (1 − ∏ pᵢ)`
+- On accept: both sides lock from `available` via `lock_parlay_escrow` (no quote-time holds)
 
 ## Deadlines
 

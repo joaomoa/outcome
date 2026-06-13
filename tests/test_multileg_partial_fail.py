@@ -15,7 +15,6 @@ def test_multileg_fails_when_one_leg_unquoted(engine, participants):
     )
 
     mm_before = get_balance(engine.conn, participants["mm1"])
-    expected_reserved = Decimal("100") * Decimal("0.60")
 
     assert engine.run_matching(request_id) == RequestStatus.FAILED
     assert engine.get_request_status(request_id) == RequestStatus.FAILED
@@ -25,8 +24,7 @@ def test_multileg_fails_when_one_leg_unquoted(engine, participants):
     assert quotes[0]["status"] == QuoteStatus.ACTIVE.value
 
     mm_after = get_balance(engine.conn, participants["mm1"])
-    assert mm_after["reserved"] == expected_reserved
-    assert mm_after["available"] == mm_before["available"]
+    assert mm_after == mm_before
 
 
 def test_three_leg_partial_quote_fails_atomically(engine, participants):

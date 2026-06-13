@@ -11,10 +11,8 @@ def test_happy_path_two_leg_accept_and_settle(engine, participants):
 
     assert engine.run_matching(request_id) == RequestStatus.PRESENTED
 
-    _, premium, collateral = parlay_capital(
-        [(Decimal("100"), Decimal("0.40")), (Decimal("200"), Decimal("0.30"))]
-    )
-    assert get_balance(engine.conn, participants["mm1"])["reserved"] == collateral
+    mm_before = get_balance(engine.conn, participants["mm1"])
+    assert mm_before["available"] == Decimal("10000")
 
     engine.accept(request_id)
     assert engine.get_request_status(request_id) == RequestStatus.ESCROW_LOCKED
@@ -22,9 +20,11 @@ def test_happy_path_two_leg_accept_and_settle(engine, participants):
     resolve_yes(engine, legs)
     assert engine.get_request_status(request_id) == RequestStatus.SETTLED
 
+    _, premium, _ = parlay_capital(
+        [(Decimal("100"), Decimal("0.40")), (Decimal("200"), Decimal("0.30"))]
+    )
     requester = get_balance(engine.conn, participants["requester"])
     mm = get_balance(engine.conn, participants["mm1"])
     assert requester["locked"] == Decimal("0")
     assert requester["available"] == Decimal("10000") - premium + Decimal("300")
-    assert mm["reserved"] == Decimal("0")
     assert mm["locked"] == Decimal("0")

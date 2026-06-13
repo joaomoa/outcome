@@ -95,7 +95,7 @@ Multi-leg requests are parlays. Matching does **not** pick the best quote per le
 3. Select the MM with the **lowest** parlay price (best for the requester buying YES)
 4. Mark that MM's quotes `selected` and store `parlay_price` on the request
 
-Escrow locks **parlay** premium and collateral at accept: `ΣNᵢ × ∏ pᵢ` and `ΣNᵢ × (1 − ∏ pᵢ)`. One escrow row per request. MM reserve reconciles to parlay collateral once all legs are quoted.
+Escrow locks **parlay** premium and collateral at accept: `ΣNᵢ × ∏ pᵢ` and `ΣNᵢ × (1 − ∏ pᵢ)`. One escrow row per request.
 
 ## Multi-leg invariant
 

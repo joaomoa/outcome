@@ -18,8 +18,8 @@ class Queries:
                 INSERT INTO participants (id, name) VALUES (%(id)s, %(name)s)
                 RETURNING id
             )
-            INSERT INTO balances (participant_id, available, reserved, locked)
-            SELECT id, %(available)s, 0, 0 FROM p
+            INSERT INTO balances (participant_id, available, locked)
+            SELECT id, %(available)s, 0 FROM p
             """,
             {"id": participant_id, "name": name, "available": available},
         )
@@ -134,12 +134,11 @@ class Queries:
         price: Decimal,
         size: Decimal,
         expires_at: datetime,
-        reserved_amount: Decimal,
     ) -> None:
         self.conn.execute(
             """
-            INSERT INTO quotes (id, leg_id, mm_id, price, size, expires_at, status, reserved_amount)
-            VALUES (%(id)s, %(leg_id)s, %(mm_id)s, %(price)s, %(size)s, %(expires_at)s, %(status)s, %(reserved)s)
+            INSERT INTO quotes (id, leg_id, mm_id, price, size, expires_at, status)
+            VALUES (%(id)s, %(leg_id)s, %(mm_id)s, %(price)s, %(size)s, %(expires_at)s, %(status)s)
             """,
             {
                 "id": quote_id,
@@ -149,7 +148,6 @@ class Queries:
                 "size": size,
                 "expires_at": expires_at,
                 "status": QuoteStatus.ACTIVE.value,
-                "reserved": reserved_amount,
             },
         )
 
@@ -209,12 +207,6 @@ class Queries:
             "SELECT * FROM quotes WHERE leg_id = ANY(%(ids)s)",
             {"ids": leg_ids},
         ).fetchall()
-
-    def update_quote_reserved_amount(self, quote_id: UUID, amount: Decimal) -> None:
-        self.conn.execute(
-            "UPDATE quotes SET reserved_amount = %(amount)s WHERE id = %(id)s",
-            {"id": quote_id, "amount": amount},
-        )
 
     def insert_escrow(
         self,

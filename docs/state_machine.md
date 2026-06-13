@@ -42,7 +42,7 @@ stateDiagram-v2
 
 | State | Meaning |
 |-------|---------|
-| `active` | MM quote live; collateral reserved |
+| `active` | MM quote live; no funds moved until accept |
 | `selected` | Best quote chosen for leg; awaiting accept |
 | `rejected` | Competing quote or request rejected; reservation released |
 | `expired` | Accept window passed; reservation released |
@@ -68,4 +68,4 @@ sequenceDiagram
 
 Leg 1 never durably reaches `selected` because matching evaluates all legs in one transaction before writing any `selected` status. If we naïvely committed leg 1 first, leg 1's MM would be bound while the request is unfilled — capital leak risk. Our design selects all or none.
 
-On `failed`, active quote reservations remain (MM can let quotes expire or withdraw in a future extension).
+On `failed`, active quotes remain (no capital was held).

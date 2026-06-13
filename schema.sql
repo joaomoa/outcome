@@ -7,7 +7,6 @@ CREATE TABLE participants (
 CREATE TABLE balances (
     participant_id UUID PRIMARY KEY REFERENCES participants(id),
     available NUMERIC(20, 8) NOT NULL CHECK (available >= 0),
-    reserved NUMERIC(20, 8) NOT NULL CHECK (reserved >= 0),
     locked NUMERIC(20, 8) NOT NULL CHECK (locked >= 0)
 );
 
@@ -38,7 +37,6 @@ CREATE TABLE quotes (
     size NUMERIC(20, 8) NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
     status TEXT NOT NULL,
-    reserved_amount NUMERIC(20, 8) NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

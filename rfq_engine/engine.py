@@ -98,7 +98,6 @@ class RfqEngine:
             if size < leg["notional"]:
                 raise InvalidStateError(f"size {size} < notional {leg['notional']}")
 
-            reserve = leg["notional"] * (Decimal("1") - price)
             quote_id = uuid.uuid4()
             self._db.insert_quote(
                 quote_id,
@@ -107,10 +106,7 @@ class RfqEngine:
                 price,
                 size,
                 now + timedelta(seconds=expires_in_seconds),
-                reserve,
             )
-            self._ledger.reserve(mm_id, reserve)
-            self._reconcile_mm_parlay_reserve(leg["request_id"], mm_id, quote_id)
         return quote_id
 
     def run_matching(self, request_id: UUID, *, at: datetime | None = None) -> RequestStatus:
@@ -167,9 +163,6 @@ class RfqEngine:
                 legs_and_quotes = selected
                 mm_id = selected[0][1]["mm_id"]
                 _, _, premium, collateral = self._parlay_capital(legs_and_quotes)
-
-                for _, quote in selected:
-                    self._ledger.release_reservation(quote["mm_id"], quote["reserved_amount"])
 
                 self._ledger.lock_parlay_escrow(
                     req["requester_id"], premium, mm_id, collateral
@@ -428,66 +421,14 @@ class RfqEngine:
         collateral = total_notional * (Decimal("1") - parlay_price)
         return total_notional, parlay_price, premium, collateral
 
-    def _mm_active_package(self, legs: list[dict], mm_id: UUID) -> list[dict] | None:
-        package: list[dict] = []
-        for leg in legs:
-            mm_quotes = sorted(
-                (
-                    q
-                    for q in self._db.list_active_quotes_for_leg(leg["id"])
-                    if q["mm_id"] == mm_id
-                ),
-                key=lambda q: (q["price"], -q["size"], q["created_at"]),
-            )
-            if not mm_quotes:
-                return None
-            package.append(mm_quotes[0])
-        return package
-
-    def _reconcile_mm_parlay_reserve(
-        self, request_id: UUID, mm_id: UUID, latest_quote_id: UUID
-    ) -> None:
-        legs = self._db.list_legs(request_id)
-        package = self._mm_active_package(legs, mm_id)
-        if package is None:
-            return
-
-        quotes_by_leg = {q["leg_id"]: q for q in package}
-        legs_and_quotes = [(leg, quotes_by_leg[leg["id"]]) for leg in legs]
-        _, _, _, target_collateral = self._parlay_capital(legs_and_quotes)
-        current = sum(q["reserved_amount"] for q in package)
-        delta = target_collateral - current
-        if delta > 0:
-            self._ledger.reserve(mm_id, delta)
-            latest = next(q for q in package if q["id"] == latest_quote_id)
-            self._db.update_quote_reserved_amount(
-                latest_quote_id, latest["reserved_amount"] + delta
-            )
-        elif delta < 0:
-            self._ledger.release_reservation(mm_id, -delta)
-            self._reduce_quote_reservations(package, -delta)
-
-    def _reduce_quote_reservations(self, quotes: list[dict], amount: Decimal) -> None:
-        remaining = amount
-        for quote in sorted(quotes, key=lambda q: q["reserved_amount"], reverse=True):
-            if remaining <= 0:
-                break
-            take = min(quote["reserved_amount"], remaining)
-            self._db.update_quote_reserved_amount(
-                quote["id"], quote["reserved_amount"] - take
-            )
-            remaining -= take
-
     def _release_quotes(self, request_id: UUID, final_status: QuoteStatus) -> None:
         for leg in self._db.list_leg_ids(request_id):
             for quote in self._db.list_quotes_for_leg(leg["id"]):
                 if quote["status"] in (QuoteStatus.ACTIVE.value, QuoteStatus.SELECTED.value):
-                    self._ledger.release_reservation(quote["mm_id"], quote["reserved_amount"])
                     self._db.update_quote_status(quote["id"], final_status)
 
     def _reject_competing(self, request_id: UUID, selected_ids: set[UUID]) -> None:
         for leg in self._db.list_leg_ids(request_id):
             for quote in self._db.list_active_quotes_for_leg(leg["id"]):
                 if quote["id"] not in selected_ids:
-                    self._ledger.release_reservation(quote["mm_id"], quote["reserved_amount"])
                     self._db.update_quote_status(quote["id"], QuoteStatus.REJECTED)
