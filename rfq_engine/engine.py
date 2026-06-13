@@ -182,7 +182,8 @@ class RfqEngine:
                 self._db.update_request_status(request_id, RequestStatus.FAILED)
             else:
                 mm_id = parlay_quote["mm_id"]
-                premium, collateral = self._parlay_capital(req["stake"], req["parlay_price"])
+                premium = self._parlay_premium(req["stake"], req["parlay_price"])
+                collateral = self._parlay_collateral(req["stake"], req["parlay_price"])
 
                 self._ledger.lock_parlay_escrow(
                     req["requester_id"], premium, mm_id, collateral
@@ -426,10 +427,11 @@ class RfqEngine:
 
         return best_package
 
-    def _parlay_capital(self, stake: Decimal, parlay_price: Decimal) -> tuple[Decimal, Decimal]:
-        premium = stake * parlay_price
-        collateral = stake * (Decimal("1") - parlay_price)
-        return premium, collateral
+    def _parlay_premium(self, stake: Decimal, parlay_price: Decimal) -> Decimal:
+        return stake * parlay_price
+
+    def _parlay_collateral(self, stake: Decimal, parlay_price: Decimal) -> Decimal:
+        return stake * (Decimal("1") - parlay_price)
 
     def _release_quotes(self, request_id: UUID, final_status: QuoteStatus) -> None:
         for leg in self._db.list_legs(request_id):
