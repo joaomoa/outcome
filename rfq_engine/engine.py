@@ -18,7 +18,7 @@ from rfq_engine.ledger import Ledger
 from rfq_engine.queries import Queries
 
 ACCEPT_WINDOW_SECONDS = 300.0
-DISPUTE_WINDOW_SECONDS = 2 * 3600.0  # 2 hours (Polymarket-style)
+DISPUTE_WINDOW_SECONDS = 2 * 3600.0
 
 
 @dataclass
