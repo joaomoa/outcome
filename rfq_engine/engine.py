@@ -90,7 +90,7 @@ class RfqEngine:
             if leg is None:
                 raise NotFoundError(f"leg {leg_id} not found")
 
-            req = self._db.get_request_for_update(leg["request_id"])
+            req = self._db.get_request(leg["request_id"], for_update=True)
             if req["status"] not in (RequestStatus.OPEN.value, RequestStatus.QUOTING.value):
                 raise InvalidStateError(f"cannot quote in status {req['status']}")
             if now >= req["response_deadline"]:
@@ -112,7 +112,7 @@ class RfqEngine:
     def run_matching(self, request_id: UUID, *, at: datetime | None = None) -> RequestStatus:
         now = self._now(at)
         with self.conn.transaction():
-            req = self._db.get_request_for_update(request_id)
+            req = self._db.get_request(request_id, for_update=True)
             if req is None:
                 raise NotFoundError(f"request {request_id} not found")
             if req["status"] not in (RequestStatus.QUOTING.value, RequestStatus.OPEN.value):
@@ -139,7 +139,7 @@ class RfqEngine:
         now = self._now(at)
         quote_expired = False
         with self.conn.transaction():
-            req = self._db.get_request_for_update(request_id)
+            req = self._db.get_request(request_id, for_update=True)
             if req is None:
                 raise NotFoundError(f"request {request_id} not found")
             if req["status"] != RequestStatus.PRESENTED.value:
@@ -183,7 +183,7 @@ class RfqEngine:
 
     def reject(self, request_id: UUID) -> None:
         with self.conn.transaction():
-            req = self._db.get_request_for_update(request_id)
+            req = self._db.get_request(request_id, for_update=True)
             if req is None:
                 raise NotFoundError(f"request {request_id} not found")
             if req["status"] != RequestStatus.PRESENTED.value:
@@ -210,7 +210,7 @@ class RfqEngine:
                 outcome = ResolutionOutcome(row["outcome"])
                 self._apply_parlay_outcome(request_id, outcome)
                 self._db.update_resolution(
-                    request_id, ResolutionStatus.RESOLVED, outcome.value
+                    request_id, ResolutionStatus.RESOLVED, outcome=outcome.value
                 )
                 finalized.append(request_id)
             return finalized
@@ -246,7 +246,7 @@ class RfqEngine:
     def propose_outcome(self, request_id: UUID, *, at: datetime | None = None) -> None:
         now = self._now(at)
         with self.conn.transaction():
-            res = self._db.get_resolution_for_update(request_id)
+            res = self._db.get_resolution(request_id, for_update=True)
             if res is None:
                 raise NotFoundError(f"no resolution for request {request_id}")
             if res["status"] != ResolutionStatus.PENDING.value:
@@ -263,7 +263,7 @@ class RfqEngine:
     def dispute_request(self, request_id: UUID, *, at: datetime | None = None) -> None:
         now = self._now(at)
         with self.conn.transaction():
-            res = self._db.get_resolution_for_update(request_id)
+            res = self._db.get_resolution(request_id, for_update=True)
             if res is None:
                 raise NotFoundError(f"no resolution for request {request_id}")
             if res["status"] != ResolutionStatus.PROPOSED.value:
@@ -272,11 +272,11 @@ class RfqEngine:
                 )
             if res["dispute_deadline"] is None or now > res["dispute_deadline"]:
                 raise DisputeWindowExpiredError("dispute window expired")
-            self._db.update_resolution_status(request_id, ResolutionStatus.DISPUTED)
+            self._db.update_resolution(request_id, ResolutionStatus.DISPUTED)
 
     def finalize_request(self, request_id: UUID) -> None:
         with self.conn.transaction():
-            res = self._db.get_resolution_for_update(request_id)
+            res = self._db.get_resolution(request_id, for_update=True)
             if res is None:
                 raise NotFoundError(f"no resolution for request {request_id}")
             if res["status"] == ResolutionStatus.RESOLVED.value:
@@ -287,11 +287,11 @@ class RfqEngine:
                 )
             outcome = ResolutionOutcome(res["outcome"])
             self._apply_parlay_outcome(request_id, outcome)
-            self._db.update_resolution(request_id, ResolutionStatus.RESOLVED, outcome.value)
+            self._db.update_resolution(request_id, ResolutionStatus.RESOLVED, outcome=outcome.value)
 
     def resolve_request(self, request_id: UUID, outcome: ResolutionOutcome) -> None:
         with self.conn.transaction():
-            res = self._db.get_resolution_for_update(request_id)
+            res = self._db.get_resolution(request_id, for_update=True)
             if res is None:
                 raise NotFoundError(f"no resolution for request {request_id}")
             if res["status"] == ResolutionStatus.RESOLVED.value:
@@ -301,7 +301,7 @@ class RfqEngine:
                     f"cannot resolve request {request_id} in status {res['status']}"
                 )
             self._apply_parlay_outcome(request_id, outcome)
-            self._db.update_resolution(request_id, ResolutionStatus.RESOLVED, outcome.value)
+            self._db.update_resolution(request_id, ResolutionStatus.RESOLVED, outcome=outcome.value)
 
     def settle_request(self, request_id: UUID) -> None:
         with self.conn.transaction():
@@ -366,7 +366,7 @@ class RfqEngine:
         for leg in legs:
             valid = [
                 q
-                for q in self._db.list_active_quotes_for_leg(leg["id"])
+                for q in self._db.list_quotes_for_leg(leg["id"], status=QuoteStatus.ACTIVE)
                 if q["expires_at"] > now and q["size"] >= leg["notional"]
             ]
             if not valid:
@@ -422,13 +422,13 @@ class RfqEngine:
         return total_notional, parlay_price, premium, collateral
 
     def _release_quotes(self, request_id: UUID, final_status: QuoteStatus) -> None:
-        for leg in self._db.list_leg_ids(request_id):
+        for leg in self._db.list_legs(request_id):
             for quote in self._db.list_quotes_for_leg(leg["id"]):
                 if quote["status"] in (QuoteStatus.ACTIVE.value, QuoteStatus.SELECTED.value):
                     self._db.update_quote_status(quote["id"], final_status)
 
     def _reject_competing(self, request_id: UUID, selected_ids: set[UUID]) -> None:
-        for leg in self._db.list_leg_ids(request_id):
-            for quote in self._db.list_active_quotes_for_leg(leg["id"]):
+        for leg in self._db.list_legs(request_id):
+            for quote in self._db.list_quotes_for_leg(leg["id"], status=QuoteStatus.ACTIVE):
                 if quote["id"] not in selected_ids:
                     self._db.update_quote_status(quote["id"], QuoteStatus.REJECTED)

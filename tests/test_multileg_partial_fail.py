@@ -19,7 +19,7 @@ def test_multileg_fails_when_one_leg_unquoted(engine, participants):
     assert engine.run_matching(request_id) == RequestStatus.FAILED
     assert engine.get_request_status(request_id) == RequestStatus.FAILED
 
-    quotes = Queries(engine.conn).list_quotes_for_legs([leg["id"] for leg in legs])
+    quotes = Queries(engine.conn).list_quotes_for_leg([leg["id"] for leg in legs])
     assert len(quotes) == 1
     assert quotes[0]["status"] == QuoteStatus.ACTIVE.value
 

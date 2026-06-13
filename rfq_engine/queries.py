@@ -71,15 +71,10 @@ class Queries:
             "SELECT * FROM legs WHERE id = %(id)s", {"id": leg_id}
         ).fetchone()
 
-    def get_request_for_update(self, request_id: UUID) -> dict | None:
+    def get_request(self, request_id: UUID, *, for_update: bool = False) -> dict | None:
+        lock = " FOR UPDATE" if for_update else ""
         return self.conn.execute(
-            "SELECT * FROM requests WHERE id = %(id)s FOR UPDATE",
-            {"id": request_id},
-        ).fetchone()
-
-    def get_request(self, request_id: UUID) -> dict | None:
-        return self.conn.execute(
-            "SELECT * FROM requests WHERE id = %(id)s",
+            f"SELECT * FROM requests WHERE id = %(id)s{lock}",
             {"id": request_id},
         ).fetchone()
 
@@ -117,12 +112,6 @@ class Queries:
     def list_legs(self, request_id: UUID) -> list[dict]:
         return self.conn.execute(
             "SELECT * FROM legs WHERE request_id = %(id)s ORDER BY leg_index",
-            {"id": request_id},
-        ).fetchall()
-
-    def list_leg_ids(self, request_id: UUID) -> list[dict]:
-        return self.conn.execute(
-            "SELECT id FROM legs WHERE request_id = %(id)s",
             {"id": request_id},
         ).fetchall()
 
@@ -166,25 +155,24 @@ class Queries:
             {"leg_id": leg_id, "status": QuoteStatus.SELECTED.value},
         ).fetchone()
 
-    def list_quotes_for_leg(self, leg_id: UUID) -> list[dict]:
-        return self.conn.execute(
-            "SELECT * FROM quotes WHERE leg_id = %(leg_id)s",
-            {"leg_id": leg_id},
-        ).fetchall()
-
-    def list_active_quotes_for_leg(self, leg_id: UUID) -> list[dict]:
+    def list_quotes_for_leg(
+        self,
+        leg_id: UUID | list[UUID],
+        *,
+        status: QuoteStatus | None = None,
+    ) -> list[dict]:
+        leg_ids = [leg_id] if isinstance(leg_id, UUID) else leg_id
+        if status is None:
+            return self.conn.execute(
+                "SELECT * FROM quotes WHERE leg_id = ANY(%(ids)s)",
+                {"ids": leg_ids},
+            ).fetchall()
         return self.conn.execute(
             """
             SELECT * FROM quotes
-            WHERE leg_id = %(leg_id)s AND status = %(status)s
+            WHERE leg_id = ANY(%(ids)s) AND status = %(status)s
             """,
-            {"leg_id": leg_id, "status": QuoteStatus.ACTIVE.value},
-        ).fetchall()
-
-    def list_quotes_for_legs(self, leg_ids: list[UUID]) -> list[dict]:
-        return self.conn.execute(
-            "SELECT * FROM quotes WHERE leg_id = ANY(%(ids)s)",
-            {"ids": leg_ids},
+            {"ids": leg_ids, "status": status.value},
         ).fetchall()
 
     def insert_escrow(
@@ -234,21 +222,29 @@ class Queries:
             },
         )
 
-    def get_resolution_for_update(self, request_id: UUID) -> dict | None:
+    def get_resolution(self, request_id: UUID, *, for_update: bool = False) -> dict | None:
+        lock = " FOR UPDATE" if for_update else ""
         return self.conn.execute(
-            "SELECT * FROM resolutions WHERE request_id = %(request_id)s FOR UPDATE",
-            {"request_id": request_id},
-        ).fetchone()
-
-    def get_resolution(self, request_id: UUID) -> dict | None:
-        return self.conn.execute(
-            "SELECT * FROM resolutions WHERE request_id = %(request_id)s",
+            f"SELECT * FROM resolutions WHERE request_id = %(request_id)s{lock}",
             {"request_id": request_id},
         ).fetchone()
 
     def update_resolution(
-        self, request_id: UUID, status: ResolutionStatus, outcome: str
+        self,
+        request_id: UUID,
+        status: ResolutionStatus,
+        *,
+        outcome: str | None = None,
     ) -> None:
+        if outcome is None:
+            self.conn.execute(
+                """
+                UPDATE resolutions SET status = %(status)s
+                WHERE request_id = %(request_id)s
+                """,
+                {"request_id": request_id, "status": status.value},
+            )
+            return
         self.conn.execute(
             """
             UPDATE resolutions SET status = %(status)s, outcome = %(outcome)s
@@ -286,15 +282,6 @@ class Queries:
             """,
             {"status": ResolutionStatus.PROPOSED.value, "at": at},
         ).fetchall()
-
-    def update_resolution_status(self, request_id: UUID, status: ResolutionStatus) -> None:
-        self.conn.execute(
-            """
-            UPDATE resolutions SET status = %(status)s
-            WHERE request_id = %(request_id)s
-            """,
-            {"request_id": request_id, "status": status.value},
-        )
 
     def set_leg_component_outcome(self, leg_id: UUID, outcome: str) -> None:
         self.conn.execute(

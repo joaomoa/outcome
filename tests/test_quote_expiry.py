@@ -41,7 +41,7 @@ def test_reject_presented_request(engine, participants, conn):
     engine.reject(request_id)
 
     assert engine.get_request_status(request_id) == RequestStatus.REJECTED
-    quotes = Queries(conn).list_quotes_for_legs([leg["id"] for leg in legs])
+    quotes = Queries(conn).list_quotes_for_leg([leg["id"] for leg in legs])
     assert all(q["status"] == QuoteStatus.REJECTED.value for q in quotes)
 
     mm = get_balance(conn, participants["mm1"])
@@ -59,7 +59,7 @@ def test_process_expirations_marks_accept_window_expired(engine, participants, c
     assert expired == [request_id]
 
     assert engine.get_request_status(request_id) == RequestStatus.EXPIRED
-    quotes = Queries(conn).list_quotes_for_legs([leg["id"] for leg in legs])
+    quotes = Queries(conn).list_quotes_for_leg([leg["id"] for leg in legs])
     assert all(q["status"] == QuoteStatus.EXPIRED.value for q in quotes)
 
     mm = get_balance(conn, participants["mm1"])
