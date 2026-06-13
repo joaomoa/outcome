@@ -11,12 +11,15 @@ Resolution is one state machine per **request**, not per leg. Legs only accumula
 ```mermaid
 stateDiagram-v2
     direction LR
-    [*] --> Pending: initiate_resolution
-    Pending --> Proposed: propose_outcome
-    Proposed --> Resolved: finalize_request
-    Proposed --> Disputed: dispute_request
-    Disputed --> Resolved: resolve_request
+    [*] --> pending: initiate_resolution
+    pending --> proposed: propose_outcome
+    proposed --> resolved: finalize_request
+    proposed --> resolved: process_resolution_expirations
+    proposed --> disputed: dispute_request
+    disputed --> resolved: resolve_request
 ```
+
+These are `resolutions.status` values. `initiate_resolution` also sets `requests.status = resolved`; the request stays there until `settle_request` moves it to `settled`. See `docs/state_machine.md`.
 
 | Status | Meaning | Disputes open? | Funds move? |
 |--------|---------|----------------|-------------|
@@ -51,7 +54,7 @@ Once every leg has a `component_outcome` (`YES`, `NO`, or `VOID`):
 
 ## Happy path (unchallenged proposal)
 
-1. `initiate_resolution(request_id)` — request → `pending`
+1. `initiate_resolution(request_id)` — `requests.status → resolved`, `resolutions.status → pending`
 2. `report_leg_outcome(leg_id, YES|NO|VOID)` for each leg as events complete
 3. `propose_outcome(request_id)` — computes parlay, sets `dispute_deadline`, → `proposed`
 4. Dispute window passes with no challenge
@@ -70,8 +73,8 @@ A worker calls `process_resolution_expirations(at)` to auto-finalize unchallenge
 
 Disputes challenge the **parlay proposal**, not individual legs in isolation. Either counterparty calls `dispute_request(request_id)` while `proposed`.
 
-| Step | Request status | Funds |
-|------|----------------|-------|
+| Step | `resolutions.status` | Funds |
+|------|----------------------|-------|
 | all legs reported + `propose_outcome` | `pending` → `proposed` | locked |
 | `dispute_request` | `proposed` → `disputed` | locked |
 | arbitrator `resolve_request(outcome)` | `disputed` → `resolved` | payout or refund |
