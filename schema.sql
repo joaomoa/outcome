@@ -1,3 +1,35 @@
+CREATE TYPE request_status AS ENUM (
+    'open',
+    'quoting',
+    'presented',
+    'escrow_locked',
+    'resolved',
+    'settled',
+    'rejected',
+    'expired',
+    'failed'
+);
+
+CREATE TYPE quote_status AS ENUM (
+    'active',
+    'selected',
+    'rejected',
+    'expired'
+);
+
+CREATE TYPE resolution_status AS ENUM (
+    'pending',
+    'proposed',
+    'disputed',
+    'resolved'
+);
+
+CREATE TYPE resolution_outcome AS ENUM (
+    'yes',
+    'no',
+    'void'
+);
+
 CREATE TABLE participants (
     id UUID PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
@@ -13,7 +45,7 @@ CREATE TABLE balances (
 CREATE TABLE requests (
     id UUID PRIMARY KEY,
     requester_id UUID NOT NULL REFERENCES participants(id),
-    status TEXT NOT NULL,
+    status request_status NOT NULL,
     response_deadline TIMESTAMPTZ NOT NULL,
     accept_deadline TIMESTAMPTZ,
     parlay_price NUMERIC(20, 8),
@@ -26,7 +58,7 @@ CREATE TABLE legs (
     contract_description TEXT NOT NULL,
     notional NUMERIC(20, 8) NOT NULL,
     leg_index INT NOT NULL,
-    component_outcome TEXT
+    component_outcome resolution_outcome
 );
 
 CREATE TABLE quotes (
@@ -36,7 +68,7 @@ CREATE TABLE quotes (
     price NUMERIC(10, 8) NOT NULL,
     size NUMERIC(20, 8) NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
-    status TEXT NOT NULL,
+    status quote_status NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -55,8 +87,8 @@ CREATE TABLE escrows (
 CREATE TABLE resolutions (
     id UUID PRIMARY KEY,
     request_id UUID NOT NULL UNIQUE REFERENCES requests(id),
-    status TEXT NOT NULL,
-    outcome TEXT,
+    status resolution_status NOT NULL,
+    outcome resolution_outcome,
     dispute_deadline TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
