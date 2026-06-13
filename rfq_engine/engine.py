@@ -102,7 +102,7 @@ class RfqEngine:
         expires_in_seconds: float,
         *,
         at: datetime | None = None,
-    ) -> UUID:
+    ) -> None:
         now = self._now(at)
         with self.conn.transaction():
             req = self._db.get_request(request_id, for_update=True)
@@ -115,16 +115,12 @@ class RfqEngine:
             if size < req["stake"]:
                 raise InvalidStateError(f"size {size} < stake {req['stake']}")
 
-            self._db.reject_active_parlay_quotes(request_id, mm_id)
-            quote_id = uuid.uuid4()
-            self._db.insert_parlay_quote(
-                quote_id,
+            self._db.upsert_parlay_quote(
                 request_id,
                 mm_id,
                 size,
                 now + timedelta(seconds=expires_in_seconds),
             )
-        return quote_id
 
     def run_matching(self, request_id: UUID, *, at: datetime | None = None) -> RequestStatus:
         now = self._now(at)
@@ -144,7 +140,9 @@ class RfqEngine:
             leg_quotes, parlay_quote, parlay_price = package
             for quote in leg_quotes:
                 self._db.update_quote_status(quote["id"], QuoteStatus.SELECTED)
-            self._db.update_parlay_quote_status(parlay_quote["id"], QuoteStatus.SELECTED)
+            self._db.update_parlay_quote_status(
+                request_id, parlay_quote["mm_id"], QuoteStatus.SELECTED
+            )
             self._db.update_request_presented(
                 request_id,
                 now + timedelta(seconds=ACCEPT_WINDOW_SECONDS),
@@ -197,7 +195,7 @@ class RfqEngine:
                     premium,
                     collateral,
                 )
-                self._reject_competing(request_id, selected_leg_ids, parlay_quote["id"])
+                self._reject_competing(request_id, selected_leg_ids, mm_id)
                 self._db.update_request_status(request_id, RequestStatus.ESCROW_LOCKED)
         if quote_expired:
             raise QuoteExpiredError("quote expired before accept")
@@ -404,11 +402,10 @@ class RfqEngine:
         best_package: tuple[list[dict], dict, Decimal] | None = None
         best_price: Decimal | None = None
         for mm_id in common_mms:
-            parlay_quote = self._db.get_parlay_quote(
-                request_id, mm_id, status=QuoteStatus.ACTIVE
-            )
+            parlay_quote = self._db.get_parlay_quote(request_id, mm_id)
             if (
                 parlay_quote is None
+                or parlay_quote["status"] != QuoteStatus.ACTIVE.value
                 or parlay_quote["expires_at"] <= now
                 or parlay_quote["size"] < stake
             ):
@@ -441,15 +438,19 @@ class RfqEngine:
                     self._db.update_quote_status(quote["id"], final_status)
         for quote in self._db.list_parlay_quotes_for_request(request_id):
             if quote["status"] in (QuoteStatus.ACTIVE.value, QuoteStatus.SELECTED.value):
-                self._db.update_parlay_quote_status(quote["id"], final_status)
+                self._db.update_parlay_quote_status(
+                    request_id, quote["mm_id"], final_status
+                )
 
     def _reject_competing(
-        self, request_id: UUID, selected_leg_ids: set[UUID], selected_parlay_id: UUID
+        self, request_id: UUID, selected_leg_ids: set[UUID], selected_mm_id: UUID
     ) -> None:
         for leg in self._db.list_legs(request_id):
             for quote in self._db.list_quotes_for_leg(leg["id"], status=QuoteStatus.ACTIVE):
                 if quote["id"] not in selected_leg_ids:
                     self._db.update_quote_status(quote["id"], QuoteStatus.REJECTED)
         for quote in self._db.list_parlay_quotes_for_request(request_id, status=QuoteStatus.ACTIVE):
-            if quote["id"] != selected_parlay_id:
-                self._db.update_parlay_quote_status(quote["id"], QuoteStatus.REJECTED)
+            if quote["mm_id"] != selected_mm_id:
+                self._db.update_parlay_quote_status(
+                    request_id, quote["mm_id"], QuoteStatus.REJECTED
+                )

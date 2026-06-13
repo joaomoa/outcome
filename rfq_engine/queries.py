@@ -138,9 +138,8 @@ class Queries:
             },
         )
 
-    def insert_parlay_quote(
+    def upsert_parlay_quote(
         self,
-        quote_id: UUID,
         request_id: UUID,
         mm_id: UUID,
         size: Decimal,
@@ -148,11 +147,14 @@ class Queries:
     ) -> None:
         self.conn.execute(
             """
-            INSERT INTO parlay_quotes (id, request_id, mm_id, size, expires_at, status)
-            VALUES (%(id)s, %(request_id)s, %(mm_id)s, %(size)s, %(expires_at)s, %(status)s)
+            INSERT INTO parlay_quotes (request_id, mm_id, size, expires_at, status)
+            VALUES (%(request_id)s, %(mm_id)s, %(size)s, %(expires_at)s, %(status)s)
+            ON CONFLICT (request_id, mm_id) DO UPDATE SET
+                size = EXCLUDED.size,
+                expires_at = EXCLUDED.expires_at,
+                status = EXCLUDED.status
             """,
             {
-                "id": quote_id,
                 "request_id": request_id,
                 "mm_id": mm_id,
                 "size": size,
@@ -161,33 +163,13 @@ class Queries:
             },
         )
 
-    def reject_active_parlay_quotes(self, request_id: UUID, mm_id: UUID) -> None:
-        self.conn.execute(
-            """
-            UPDATE parlay_quotes SET status = %(rejected)s
-            WHERE request_id = %(request_id)s AND mm_id = %(mm_id)s AND status = %(active)s
-            """,
-            {
-                "request_id": request_id,
-                "mm_id": mm_id,
-                "active": QuoteStatus.ACTIVE.value,
-                "rejected": QuoteStatus.REJECTED.value,
-            },
-        )
-
-    def get_parlay_quote(
-        self, request_id: UUID, mm_id: UUID, *, status: QuoteStatus
-    ) -> dict | None:
+    def get_parlay_quote(self, request_id: UUID, mm_id: UUID) -> dict | None:
         return self.conn.execute(
             """
             SELECT * FROM parlay_quotes
-            WHERE request_id = %(request_id)s AND mm_id = %(mm_id)s AND status = %(status)s
+            WHERE request_id = %(request_id)s AND mm_id = %(mm_id)s
             """,
-            {
-                "request_id": request_id,
-                "mm_id": mm_id,
-                "status": status.value,
-            },
+            {"request_id": request_id, "mm_id": mm_id},
         ).fetchone()
 
     def update_quote_status(self, quote_id: UUID, status: QuoteStatus) -> None:
@@ -196,10 +178,19 @@ class Queries:
             {"id": quote_id, "status": status.value},
         )
 
-    def update_parlay_quote_status(self, quote_id: UUID, status: QuoteStatus) -> None:
+    def update_parlay_quote_status(
+        self, request_id: UUID, mm_id: UUID, status: QuoteStatus
+    ) -> None:
         self.conn.execute(
-            "UPDATE parlay_quotes SET status = %(status)s WHERE id = %(id)s",
-            {"id": quote_id, "status": status.value},
+            """
+            UPDATE parlay_quotes SET status = %(status)s
+            WHERE request_id = %(request_id)s AND mm_id = %(mm_id)s
+            """,
+            {
+                "request_id": request_id,
+                "mm_id": mm_id,
+                "status": status.value,
+            },
         )
 
     def get_selected_quote(self, leg_id: UUID) -> dict | None:

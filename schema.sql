@@ -74,19 +74,16 @@ CREATE TABLE quotes (
 CREATE UNIQUE INDEX uq_one_selected_per_leg ON quotes (leg_id) WHERE status = 'selected';
 
 CREATE TABLE parlay_quotes (
-    id UUID PRIMARY KEY,
     request_id UUID NOT NULL REFERENCES requests(id),
     mm_id UUID NOT NULL REFERENCES participants(id),
     size NUMERIC(20, 8) NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
     status quote_status NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (request_id, mm_id)
 );
 
 CREATE UNIQUE INDEX uq_one_selected_parlay_quote ON parlay_quotes (request_id) WHERE status = 'selected';
-
-CREATE UNIQUE INDEX uq_one_active_parlay_quote_per_mm
-    ON parlay_quotes (request_id, mm_id) WHERE status = 'active';
 
 CREATE TABLE escrows (
     id UUID PRIMARY KEY,
