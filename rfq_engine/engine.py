@@ -387,22 +387,16 @@ class RfqEngine:
             package: list[dict] = []
             product = Decimal("1")
             min_size: Decimal | None = None
-            earliest = None
             for leg in legs:
                 mm_quotes = sorted(
                     (q for q in quotes_by_leg[leg["id"]] if q["mm_id"] == mm_id),
-                    key=lambda q: (q["price"], -q["size"], q["created_at"]),
+                    key=lambda q: (q["price"], -q["size"]),
                 )
                 quote = mm_quotes[0]
                 package.append(quote)
                 product *= quote["price"]
                 min_size = quote["size"] if min_size is None else min(min_size, quote["size"])
-                earliest = (
-                    quote["created_at"]
-                    if earliest is None
-                    else min(earliest, quote["created_at"])
-                )
-            key = (product, -min_size, earliest, str(mm_id))
+            key = (product, -min_size, str(mm_id))
             if best_key is None or key < best_key:
                 best_key = key
                 best_package = package
