@@ -85,6 +85,9 @@ CREATE TABLE parlay_quotes (
 
 CREATE UNIQUE INDEX uq_one_selected_parlay_quote ON parlay_quotes (request_id) WHERE status = 'selected';
 
+CREATE UNIQUE INDEX uq_one_active_parlay_quote_per_mm
+    ON parlay_quotes (request_id, mm_id) WHERE status = 'active';
+
 CREATE TABLE escrows (
     id UUID PRIMARY KEY,
     request_id UUID NOT NULL UNIQUE REFERENCES requests(id),

@@ -5,7 +5,7 @@
 - State machine transitions and ledger semantics (`available` / `locked`)
 - `expires_at`, `response_deadline`, `accept_deadline` as absolute timestamps
 - Per-operation `at` (optional kwarg; test default on engine, else wall clock)
-- Best-quote ranking (parlay price → parlay size → mm_id)
+- Best-quote ranking (lowest parlay price)
 
 ## Not invariant
 

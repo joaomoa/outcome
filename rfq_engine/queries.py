@@ -161,6 +161,35 @@ class Queries:
             },
         )
 
+    def reject_active_parlay_quotes(self, request_id: UUID, mm_id: UUID) -> None:
+        self.conn.execute(
+            """
+            UPDATE parlay_quotes SET status = %(rejected)s
+            WHERE request_id = %(request_id)s AND mm_id = %(mm_id)s AND status = %(active)s
+            """,
+            {
+                "request_id": request_id,
+                "mm_id": mm_id,
+                "active": QuoteStatus.ACTIVE.value,
+                "rejected": QuoteStatus.REJECTED.value,
+            },
+        )
+
+    def get_parlay_quote(
+        self, request_id: UUID, mm_id: UUID, *, status: QuoteStatus
+    ) -> dict | None:
+        return self.conn.execute(
+            """
+            SELECT * FROM parlay_quotes
+            WHERE request_id = %(request_id)s AND mm_id = %(mm_id)s AND status = %(status)s
+            """,
+            {
+                "request_id": request_id,
+                "mm_id": mm_id,
+                "status": status.value,
+            },
+        ).fetchone()
+
     def update_quote_status(self, quote_id: UUID, status: QuoteStatus) -> None:
         self.conn.execute(
             "UPDATE quotes SET status = %(status)s WHERE id = %(id)s",
