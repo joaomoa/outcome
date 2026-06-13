@@ -27,10 +27,12 @@ rfq_engine/
 
 No ORM. SQL lives in `queries.py` and `ledger.py`; `engine.py` is rules and flow.
 
-## Capital (buy YES, notional N, price p)
+## Capital (buy YES parlay, leg notionals Nᵢ, leg prices pᵢ)
 
-- MM reserves `N * (1 - p)` on quote (`ledger.reserve`)
-- Requester locks `N * p` on accept (`ledger.lock_escrow`)
+- MM quotes each leg; matching picks one MM with the lowest **parlay price** `∏ pᵢ`
+- MM reserves `Nᵢ * (1 - pᵢ)` per leg on quote (`ledger.reserve`)
+- Requester locks `Nᵢ * pᵢ` per leg on accept (`ledger.lock_escrow`)
+- `requests.parlay_price` stores the winning product at match time
 
 ## Deadlines
 

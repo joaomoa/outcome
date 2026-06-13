@@ -4,7 +4,7 @@
 
 | Failure | Handling |
 |---------|----------|
-| **Multi-leg partial fill** | `MatchingService.run_matching` evaluates all legs in one txn; any unfilled leg → `failed`, zero quotes set to `selected` |
+| **Multi-leg partial fill** | `run_matching` requires one MM to quote all legs; lowest parlay price (`∏ pᵢ`) wins; otherwise `failed` |
 | **Quote expiry before accept** | `AcceptanceService.accept` checks `expires_at`; releases all MM reservations, marks `failed` |
 | **Accept window expiry** | `ExpiryService.process_expirations` releases all active/selected reservations, marks `expired` |
 | **Double accept** | Status check on request; second accept sees `escrow_locked` → `ConflictError` |

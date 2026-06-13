@@ -29,8 +29,8 @@ stateDiagram-v2
 |------|-----|---------|-------|
 | — | Open | `submit_request` | Requester |
 | Open | Quoting | first quote submitted | MM |
-| Quoting | Presented | `run_matching`, all legs have valid best quote | System |
-| Quoting | Failed | `run_matching`, any leg unfilled | System |
+| Quoting | Presented | `run_matching`, one MM quotes all legs; lowest `∏ pᵢ` wins | System |
+| Quoting | Failed | `run_matching`, no MM covers all legs | System |
 | Presented | Accepted | `accept` | Requester |
 | Presented | Rejected | `reject` | Requester |
 | Presented | Expired | `process_expirations` | System |
@@ -49,7 +49,7 @@ stateDiagram-v2
 
 ## Multi-leg partial failure
 
-**Scenario:** 3-leg request; legs 1 and 3 quoted; leg 2 has no valid quote.
+**Scenario:** 3-leg request; legs 1 and 3 quoted by MM_A; leg 2 has no quote from any MM who also covers legs 1 and 3.
 
 ```mermaid
 sequenceDiagram

@@ -121,19 +121,20 @@ class RfqEngine:
             if req["status"] not in (RequestStatus.QUOTING.value, RequestStatus.OPEN.value):
                 raise InvalidStateError(f"cannot match in status {req['status']}")
 
-            selected: list[dict] = []
-            for leg in self._db.list_legs(request_id):
-                best = self._db.get_best_quote(leg["id"], leg["notional"], now)
-                if best is None:
-                    self._db.update_request_status(request_id, RequestStatus.FAILED)
-                    return RequestStatus.FAILED
-                selected.append(best)
+            legs = self._db.list_legs(request_id)
+            package = self._select_best_parlay_package(legs, now)
+            if package is None:
+                self._db.update_request_status(request_id, RequestStatus.FAILED)
+                return RequestStatus.FAILED
 
-            for quote in selected:
+            parlay_price = Decimal("1")
+            for quote in package:
                 self._db.update_quote_status(quote["id"], QuoteStatus.SELECTED)
+                parlay_price *= quote["price"]
             self._db.update_request_presented(
                 request_id,
                 now + timedelta(seconds=ACCEPT_WINDOW_SECONDS),
+                parlay_price,
             )
             return RequestStatus.PRESENTED
 
@@ -354,6 +355,59 @@ class RfqEngine:
                     escrow["mm_locked"],
                     winner,
                 )
+
+    def _select_best_parlay_package(
+        self, legs: list[dict], now: datetime
+    ) -> list[dict] | None:
+        if not legs:
+            return None
+
+        quotes_by_leg: dict[UUID, list[dict]] = {}
+        for leg in legs:
+            valid = [
+                q
+                for q in self._db.list_active_quotes_for_leg(leg["id"])
+                if q["expires_at"] > now and q["size"] >= leg["notional"]
+            ]
+            if not valid:
+                return None
+            quotes_by_leg[leg["id"]] = valid
+
+        common_mms = {
+            q["mm_id"] for q in quotes_by_leg[legs[0]["id"]]
+        }
+        for leg in legs[1:]:
+            common_mms &= {q["mm_id"] for q in quotes_by_leg[leg["id"]]}
+        if not common_mms:
+            return None
+
+        best_package: list[dict] | None = None
+        best_key: tuple | None = None
+        for mm_id in common_mms:
+            package: list[dict] = []
+            product = Decimal("1")
+            min_size: Decimal | None = None
+            earliest = None
+            for leg in legs:
+                mm_quotes = sorted(
+                    (q for q in quotes_by_leg[leg["id"]] if q["mm_id"] == mm_id),
+                    key=lambda q: (q["price"], -q["size"], q["created_at"]),
+                )
+                quote = mm_quotes[0]
+                package.append(quote)
+                product *= quote["price"]
+                min_size = quote["size"] if min_size is None else min(min_size, quote["size"])
+                earliest = (
+                    quote["created_at"]
+                    if earliest is None
+                    else min(earliest, quote["created_at"])
+                )
+            key = (product, -min_size, earliest, str(mm_id))
+            if best_key is None or key < best_key:
+                best_key = key
+                best_package = package
+
+        return best_package
 
     def _release_quotes(self, request_id: UUID, final_status: QuoteStatus) -> None:
         for leg in self._db.list_leg_ids(request_id):

@@ -97,18 +97,20 @@ class Queries:
         )
 
     def update_request_presented(
-        self, request_id: UUID, accept_deadline: datetime
+        self, request_id: UUID, accept_deadline: datetime, parlay_price: Decimal
     ) -> None:
         self.conn.execute(
             """
             UPDATE requests
-            SET status = %(status)s, accept_deadline = %(accept_deadline)s
+            SET status = %(status)s, accept_deadline = %(accept_deadline)s,
+                parlay_price = %(parlay_price)s
             WHERE id = %(id)s
             """,
             {
                 "id": request_id,
                 "status": RequestStatus.PRESENTED.value,
                 "accept_deadline": accept_deadline,
+                "parlay_price": parlay_price,
             },
         )
 

@@ -17,6 +17,7 @@ CREATE TABLE requests (
     status TEXT NOT NULL,
     response_deadline TIMESTAMPTZ NOT NULL,
     accept_deadline TIMESTAMPTZ,
+    parlay_price NUMERIC(20, 8),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

@@ -62,8 +62,6 @@ No oracle lookup layer in the MVP — the caller supplies component outcomes dir
 
 ## Dispute window
 
-Venue policy constant: `DISPUTE_WINDOW_SECONDS` (2 hours, Polymarket-style).
-
 On `propose_outcome`, the engine stores `dispute_deadline = now + DISPUTE_WINDOW_SECONDS`. While `now <= dispute_deadline` and status is `proposed`, either counterparty may call `dispute_request`. After the deadline, disputes are rejected with `DisputeWindowExpiredError`.
 
 A worker calls `process_resolution_expirations(at)` to auto-finalize unchallenged proposals past `dispute_deadline`.
@@ -87,6 +85,17 @@ If any leg's event has not occurred, that leg has no `component_outcome` and the
 ## Ambiguous contract wording
 
 If any leg's component is `VOID` (unresolvable contract), the parlay outcome is `VOID` and all escrows are refunded. The whole parlay is void — legs do not settle independently.
+
+## Multi-leg matching (parlay)
+
+Multi-leg requests are parlays. Matching does **not** pick the best quote per leg independently. Instead:
+
+1. Find MMs with a valid quote on **every** leg
+2. For each such MM, compute **parlay price** = product of that MM's leg prices (`p₁ × p₂ × …`)
+3. Select the MM with the **lowest** parlay price (best for the requester buying YES)
+4. Mark that MM's quotes `selected` and store `parlay_price` on the request
+
+Escrow still locks per-leg premium/collateral at each leg's quoted price. Settlement uses the parlay outcome across all legs together.
 
 ## Multi-leg invariant
 
