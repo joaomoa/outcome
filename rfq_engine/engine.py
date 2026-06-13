@@ -1,5 +1,4 @@
 import uuid
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID
@@ -19,12 +18,6 @@ from rfq_engine.queries import Queries
 
 ACCEPT_WINDOW_SECONDS = 300.0
 DISPUTE_WINDOW_SECONDS = 2 * 3600.0
-
-
-@dataclass
-class LegInput:
-    contract_description: str
-    notional: Decimal
 
 
 class RfqEngine:
@@ -50,7 +43,8 @@ class RfqEngine:
     def submit_request(
         self,
         requester_id: UUID,
-        legs: list[LegInput],
+        stake: Decimal,
+        legs: list[str],
         response_deadline_seconds: float,
         *,
         at: datetime | None = None,
@@ -61,17 +55,12 @@ class RfqEngine:
             self._db.insert_request(
                 request_id,
                 requester_id,
+                stake,
                 RequestStatus.QUOTING,
                 now + timedelta(seconds=response_deadline_seconds),
             )
-            for i, leg in enumerate(legs):
-                self._db.insert_leg(
-                    uuid.uuid4(),
-                    request_id,
-                    leg.contract_description,
-                    leg.notional,
-                    i,
-                )
+            for i, description in enumerate(legs):
+                self._db.insert_leg(uuid.uuid4(), request_id, description, i)
         return request_id
 
     def submit_quote(
@@ -79,7 +68,6 @@ class RfqEngine:
         leg_id: UUID,
         mm_id: UUID,
         price: Decimal,
-        size: Decimal,
         expires_in_seconds: float,
         *,
         at: datetime | None = None,
@@ -95,8 +83,6 @@ class RfqEngine:
                 raise InvalidStateError(f"cannot quote in status {req['status']}")
             if now >= req["response_deadline"]:
                 raise InvalidStateError("response deadline passed")
-            if size < leg["notional"]:
-                raise InvalidStateError(f"size {size} < notional {leg['notional']}")
 
             quote_id = uuid.uuid4()
             self._db.insert_quote(
@@ -104,6 +90,36 @@ class RfqEngine:
                 leg_id,
                 mm_id,
                 price,
+                now + timedelta(seconds=expires_in_seconds),
+            )
+        return quote_id
+
+    def submit_parlay_quote(
+        self,
+        request_id: UUID,
+        mm_id: UUID,
+        size: Decimal,
+        expires_in_seconds: float,
+        *,
+        at: datetime | None = None,
+    ) -> UUID:
+        now = self._now(at)
+        with self.conn.transaction():
+            req = self._db.get_request(request_id, for_update=True)
+            if req is None:
+                raise NotFoundError(f"request {request_id} not found")
+            if req["status"] not in (RequestStatus.OPEN.value, RequestStatus.QUOTING.value):
+                raise InvalidStateError(f"cannot quote in status {req['status']}")
+            if now >= req["response_deadline"]:
+                raise InvalidStateError("response deadline passed")
+            if size < req["stake"]:
+                raise InvalidStateError(f"size {size} < stake {req['stake']}")
+
+            quote_id = uuid.uuid4()
+            self._db.insert_parlay_quote(
+                quote_id,
+                request_id,
+                mm_id,
                 size,
                 now + timedelta(seconds=expires_in_seconds),
             )
@@ -119,15 +135,17 @@ class RfqEngine:
                 raise InvalidStateError(f"cannot match in status {req['status']}")
 
             legs = self._db.list_legs(request_id)
-            package = self._select_best_parlay_package(legs, now)
+            package = self._select_best_parlay_package(req["stake"], legs, now)
             if package is None:
                 self._db.update_request_status(request_id, RequestStatus.FAILED)
                 return RequestStatus.FAILED
 
+            leg_quotes, parlay_quote = package
             parlay_price = Decimal("1")
-            for quote in package:
+            for quote in leg_quotes:
                 self._db.update_quote_status(quote["id"], QuoteStatus.SELECTED)
                 parlay_price *= quote["price"]
+            self._db.update_parlay_quote_status(parlay_quote["id"], QuoteStatus.SELECTED)
             self._db.update_request_presented(
                 request_id,
                 now + timedelta(seconds=ACCEPT_WINDOW_SECONDS),
@@ -147,22 +165,30 @@ class RfqEngine:
             if req["accept_deadline"] is None or now > req["accept_deadline"]:
                 raise QuoteExpiredError("accept window expired")
 
+            parlay_quote = self._db.get_selected_parlay_quote(request_id)
+            if parlay_quote is None:
+                raise InvalidStateError("no selected parlay quote")
+            if parlay_quote["expires_at"] <= now:
+                self._release_quotes(request_id, QuoteStatus.REJECTED)
+                self._db.update_request_status(request_id, RequestStatus.FAILED)
+                quote_expired = True
+
             selected: list[tuple[dict, dict]] = []
-            for leg in self._db.list_legs(request_id):
-                quote = self._db.get_selected_quote(leg["id"])
-                if quote is None:
-                    raise InvalidStateError(f"leg {leg['id']} has no selected quote")
-                if quote["expires_at"] <= now:
-                    self._release_quotes(request_id, QuoteStatus.REJECTED)
-                    self._db.update_request_status(request_id, RequestStatus.FAILED)
-                    quote_expired = True
-                    break
-                selected.append((leg, quote))
+            if not quote_expired:
+                for leg in self._db.list_legs(request_id):
+                    quote = self._db.get_selected_quote(leg["id"])
+                    if quote is None:
+                        raise InvalidStateError(f"leg {leg['id']} has no selected quote")
+                    if quote["expires_at"] <= now:
+                        self._release_quotes(request_id, QuoteStatus.REJECTED)
+                        self._db.update_request_status(request_id, RequestStatus.FAILED)
+                        quote_expired = True
+                        break
+                    selected.append((leg, quote))
 
             if not quote_expired:
-                legs_and_quotes = selected
-                mm_id = selected[0][1]["mm_id"]
-                _, _, premium, collateral = self._parlay_capital(legs_and_quotes)
+                mm_id = parlay_quote["mm_id"]
+                premium, collateral = self._parlay_capital(req["stake"], req["parlay_price"])
 
                 self._ledger.lock_parlay_escrow(
                     req["requester_id"], premium, mm_id, collateral
@@ -175,8 +201,8 @@ class RfqEngine:
                     premium,
                     collateral,
                 )
-                selected_ids = {q["id"] for _, q in selected}
-                self._reject_competing(request_id, selected_ids)
+                selected_leg_ids = {q["id"] for _, q in selected}
+                self._reject_competing(request_id, selected_leg_ids, parlay_quote["id"])
                 self._db.update_request_status(request_id, RequestStatus.ESCROW_LOCKED)
         if quote_expired:
             raise QuoteExpiredError("quote expired before accept")
@@ -357,8 +383,8 @@ class RfqEngine:
                 )
 
     def _select_best_parlay_package(
-        self, legs: list[dict], now: datetime
-    ) -> list[dict] | None:
+        self, stake: Decimal, legs: list[dict], now: datetime
+    ) -> tuple[list[dict], dict] | None:
         if not legs:
             return None
 
@@ -367,62 +393,69 @@ class RfqEngine:
             valid = [
                 q
                 for q in self._db.list_quotes_for_leg(leg["id"], status=QuoteStatus.ACTIVE)
-                if q["expires_at"] > now and q["size"] >= leg["notional"]
+                if q["expires_at"] > now
             ]
             if not valid:
                 return None
             quotes_by_leg[leg["id"]] = valid
 
-        common_mms = {
-            q["mm_id"] for q in quotes_by_leg[legs[0]["id"]]
-        }
+        common_mms = {q["mm_id"] for q in quotes_by_leg[legs[0]["id"]]}
         for leg in legs[1:]:
             common_mms &= {q["mm_id"] for q in quotes_by_leg[leg["id"]]}
         if not common_mms:
             return None
 
-        best_package: list[dict] | None = None
+        best_package: tuple[list[dict], dict] | None = None
         best_key: tuple | None = None
         for mm_id in common_mms:
-            package: list[dict] = []
-            product = Decimal("1")
-            min_size: Decimal | None = None
-            for leg in legs:
-                mm_quotes = sorted(
-                    (q for q in quotes_by_leg[leg["id"]] if q["mm_id"] == mm_id),
-                    key=lambda q: (q["price"], -q["size"]),
+            parlay_quotes = [
+                q
+                for q in self._db.list_parlay_quotes_for_request(
+                    legs[0]["request_id"], status=QuoteStatus.ACTIVE
                 )
-                quote = mm_quotes[0]
-                package.append(quote)
+                if q["mm_id"] == mm_id and q["expires_at"] > now and q["size"] >= stake
+            ]
+            if not parlay_quotes:
+                continue
+            parlay_quote = max(parlay_quotes, key=lambda q: q["size"])
+
+            leg_quotes: list[dict] = []
+            product = Decimal("1")
+            for leg in legs:
+                quote = min(
+                    (q for q in quotes_by_leg[leg["id"]] if q["mm_id"] == mm_id),
+                    key=lambda q: q["price"],
+                )
+                leg_quotes.append(quote)
                 product *= quote["price"]
-                min_size = quote["size"] if min_size is None else min(min_size, quote["size"])
-            key = (product, -min_size, str(mm_id))
+            key = (product, -parlay_quote["size"], str(mm_id))
             if best_key is None or key < best_key:
                 best_key = key
-                best_package = package
+                best_package = (leg_quotes, parlay_quote)
 
         return best_package
 
-    def _parlay_capital(
-        self, legs_and_quotes: list[tuple[dict, dict]]
-    ) -> tuple[Decimal, Decimal, Decimal, Decimal]:
-        total_notional = Decimal("0")
-        parlay_price = Decimal("1")
-        for leg, quote in legs_and_quotes:
-            total_notional += leg["notional"]
-            parlay_price *= quote["price"]
-        premium = total_notional * parlay_price
-        collateral = total_notional * (Decimal("1") - parlay_price)
-        return total_notional, parlay_price, premium, collateral
+    def _parlay_capital(self, stake: Decimal, parlay_price: Decimal) -> tuple[Decimal, Decimal]:
+        premium = stake * parlay_price
+        collateral = stake * (Decimal("1") - parlay_price)
+        return premium, collateral
 
     def _release_quotes(self, request_id: UUID, final_status: QuoteStatus) -> None:
         for leg in self._db.list_legs(request_id):
             for quote in self._db.list_quotes_for_leg(leg["id"]):
                 if quote["status"] in (QuoteStatus.ACTIVE.value, QuoteStatus.SELECTED.value):
                     self._db.update_quote_status(quote["id"], final_status)
+        for quote in self._db.list_parlay_quotes_for_request(request_id):
+            if quote["status"] in (QuoteStatus.ACTIVE.value, QuoteStatus.SELECTED.value):
+                self._db.update_parlay_quote_status(quote["id"], final_status)
 
-    def _reject_competing(self, request_id: UUID, selected_ids: set[UUID]) -> None:
+    def _reject_competing(
+        self, request_id: UUID, selected_leg_ids: set[UUID], selected_parlay_id: UUID
+    ) -> None:
         for leg in self._db.list_legs(request_id):
             for quote in self._db.list_quotes_for_leg(leg["id"], status=QuoteStatus.ACTIVE):
-                if quote["id"] not in selected_ids:
+                if quote["id"] not in selected_leg_ids:
                     self._db.update_quote_status(quote["id"], QuoteStatus.REJECTED)
+        for quote in self._db.list_parlay_quotes_for_request(request_id, status=QuoteStatus.ACTIVE):
+            if quote["id"] != selected_parlay_id:
+                self._db.update_parlay_quote_status(quote["id"], QuoteStatus.REJECTED)

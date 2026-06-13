@@ -28,17 +28,19 @@ class Queries:
         self,
         request_id: UUID,
         requester_id: UUID,
+        stake: Decimal,
         status: RequestStatus,
         response_deadline: datetime,
     ) -> None:
         self.conn.execute(
             """
-            INSERT INTO requests (id, requester_id, status, response_deadline)
-            VALUES (%(id)s, %(requester_id)s, %(status)s, %(response_deadline)s)
+            INSERT INTO requests (id, requester_id, stake, status, response_deadline)
+            VALUES (%(id)s, %(requester_id)s, %(stake)s, %(status)s, %(response_deadline)s)
             """,
             {
                 "id": request_id,
                 "requester_id": requester_id,
+                "stake": stake,
                 "status": status.value,
                 "response_deadline": response_deadline,
             },
@@ -49,19 +51,17 @@ class Queries:
         leg_id: UUID,
         request_id: UUID,
         contract_description: str,
-        notional: Decimal,
         leg_index: int,
     ) -> None:
         self.conn.execute(
             """
-            INSERT INTO legs (id, request_id, contract_description, notional, leg_index)
-            VALUES (%(id)s, %(request_id)s, %(desc)s, %(notional)s, %(leg_index)s)
+            INSERT INTO legs (id, request_id, contract_description, leg_index)
+            VALUES (%(id)s, %(request_id)s, %(desc)s, %(leg_index)s)
             """,
             {
                 "id": leg_id,
                 "request_id": request_id,
                 "desc": contract_description,
-                "notional": notional,
                 "leg_index": leg_index,
             },
         )
@@ -121,19 +121,40 @@ class Queries:
         leg_id: UUID,
         mm_id: UUID,
         price: Decimal,
-        size: Decimal,
         expires_at: datetime,
     ) -> None:
         self.conn.execute(
             """
-            INSERT INTO quotes (id, leg_id, mm_id, price, size, expires_at, status)
-            VALUES (%(id)s, %(leg_id)s, %(mm_id)s, %(price)s, %(size)s, %(expires_at)s, %(status)s)
+            INSERT INTO quotes (id, leg_id, mm_id, price, expires_at, status)
+            VALUES (%(id)s, %(leg_id)s, %(mm_id)s, %(price)s, %(expires_at)s, %(status)s)
             """,
             {
                 "id": quote_id,
                 "leg_id": leg_id,
                 "mm_id": mm_id,
                 "price": price,
+                "expires_at": expires_at,
+                "status": QuoteStatus.ACTIVE.value,
+            },
+        )
+
+    def insert_parlay_quote(
+        self,
+        quote_id: UUID,
+        request_id: UUID,
+        mm_id: UUID,
+        size: Decimal,
+        expires_at: datetime,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO parlay_quotes (id, request_id, mm_id, size, expires_at, status)
+            VALUES (%(id)s, %(request_id)s, %(mm_id)s, %(size)s, %(expires_at)s, %(status)s)
+            """,
+            {
+                "id": quote_id,
+                "request_id": request_id,
+                "mm_id": mm_id,
                 "size": size,
                 "expires_at": expires_at,
                 "status": QuoteStatus.ACTIVE.value,
@@ -146,6 +167,12 @@ class Queries:
             {"id": quote_id, "status": status.value},
         )
 
+    def update_parlay_quote_status(self, quote_id: UUID, status: QuoteStatus) -> None:
+        self.conn.execute(
+            "UPDATE parlay_quotes SET status = %(status)s WHERE id = %(id)s",
+            {"id": quote_id, "status": status.value},
+        )
+
     def get_selected_quote(self, leg_id: UUID) -> dict | None:
         return self.conn.execute(
             """
@@ -153,6 +180,15 @@ class Queries:
             WHERE leg_id = %(leg_id)s AND status = %(status)s
             """,
             {"leg_id": leg_id, "status": QuoteStatus.SELECTED.value},
+        ).fetchone()
+
+    def get_selected_parlay_quote(self, request_id: UUID) -> dict | None:
+        return self.conn.execute(
+            """
+            SELECT * FROM parlay_quotes
+            WHERE request_id = %(request_id)s AND status = %(status)s
+            """,
+            {"request_id": request_id, "status": QuoteStatus.SELECTED.value},
         ).fetchone()
 
     def list_quotes_for_leg(
@@ -173,6 +209,25 @@ class Queries:
             WHERE leg_id = ANY(%(ids)s) AND status = %(status)s
             """,
             {"ids": leg_ids, "status": status.value},
+        ).fetchall()
+
+    def list_parlay_quotes_for_request(
+        self,
+        request_id: UUID,
+        *,
+        status: QuoteStatus | None = None,
+    ) -> list[dict]:
+        if status is None:
+            return self.conn.execute(
+                "SELECT * FROM parlay_quotes WHERE request_id = %(request_id)s",
+                {"request_id": request_id},
+            ).fetchall()
+        return self.conn.execute(
+            """
+            SELECT * FROM parlay_quotes
+            WHERE request_id = %(request_id)s AND status = %(status)s
+            """,
+            {"request_id": request_id, "status": status.value},
         ).fetchall()
 
     def insert_escrow(

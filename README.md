@@ -27,11 +27,12 @@ rfq_engine/
 
 No ORM. SQL lives in `queries.py` and `ledger.py`; `engine.py` is rules and flow.
 
-## Capital (buy YES parlay, total notional ΣNᵢ, leg prices pᵢ)
+## Capital (buy YES parlay, stake S, leg prices pᵢ)
 
 - Parlay price: `∏ pᵢ` (stored on `requests.parlay_price` at match)
-- Premium: `ΣNᵢ × ∏ pᵢ`; collateral: `ΣNᵢ × (1 − ∏ pᵢ)`
+- Premium: `S × ∏ pᵢ`; collateral: `S × (1 − ∏ pᵢ)`
 - On accept: both sides lock from `available` via `lock_parlay_escrow` (no quote-time holds)
+- MM quotes leg prices via `submit_quote` and parlay capacity via `submit_parlay_quote` (`size >= stake`)
 
 ## Deadlines
 
@@ -41,7 +42,7 @@ No ORM. SQL lives in `queries.py` and `ledger.py`; `engine.py` is rules and flow
 
 ## Flow
 
-`submit_request` → `submit_quote` → `run_matching` → `accept` → `initiate_resolution` → `report_leg_outcome` (all legs) → `propose_outcome` → `finalize_request` → `settle_request`
+`submit_request` → `submit_quote` + `submit_parlay_quote` → `run_matching` → `accept` → ...
 
 Multi-leg requests are parlays: YES only if every leg is YES. Report each leg's component outcome, then `propose_outcome(request_id)` computes the parlay. Disputes (`dispute_request`) apply to the whole request while `proposed`.
 

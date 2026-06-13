@@ -3,18 +3,19 @@ from uuid import UUID
 
 import psycopg
 
-from rfq_engine.engine import LegInput, RfqEngine
+from rfq_engine.engine import RfqEngine
 from rfq_engine.enums import ResolutionOutcome
 from rfq_engine.queries import Queries
 
+DEFAULT_STAKE = Decimal("300")
 
-def parlay_capital(notional_and_prices: list[tuple[Decimal, Decimal]]) -> tuple[Decimal, Decimal, Decimal]:
-    total = sum(n for n, _ in notional_and_prices)
+
+def parlay_capital(stake: Decimal, prices: list[Decimal]) -> tuple[Decimal, Decimal, Decimal]:
     price = Decimal("1")
-    for _, p in notional_and_prices:
+    for p in prices:
         price *= p
-    premium = total * price
-    collateral = total * (Decimal("1") - price)
+    premium = stake * price
+    collateral = stake * (Decimal("1") - price)
     return price, premium, collateral
 
 
@@ -26,22 +27,30 @@ def get_balance(conn: psycopg.Connection, participant_id: UUID) -> dict:
     return Queries(conn).get_balance(participant_id)
 
 
-def submit_two_leg_request(eng: RfqEngine, requester_id: UUID) -> tuple:
+def submit_two_leg_request(eng: RfqEngine, requester_id: UUID, stake: Decimal = DEFAULT_STAKE) -> tuple:
     request_id = eng.submit_request(
         requester_id=requester_id,
-        legs=[
-            LegInput("contract-A", Decimal("100")),
-            LegInput("contract-B", Decimal("200")),
-        ],
+        stake=stake,
+        legs=["contract-A", "contract-B"],
         response_deadline_seconds=3600,
     )
     legs = get_legs(eng.conn, request_id)
     return request_id, legs
 
 
-def quote_both_legs(eng: RfqEngine, legs, mm_id, price_a, price_b):
-    eng.submit_quote(legs[0]["id"], mm_id, price_a, Decimal("100"), expires_in_seconds=7200)
-    eng.submit_quote(legs[1]["id"], mm_id, price_b, Decimal("200"), expires_in_seconds=7200)
+def quote_parlay(
+    eng: RfqEngine,
+    request_id: UUID,
+    legs: list[dict],
+    mm_id: UUID,
+    prices: list[Decimal],
+    *,
+    size: Decimal = DEFAULT_STAKE,
+    expires_in_seconds: float = 7200,
+):
+    for leg, price in zip(legs, prices):
+        eng.submit_quote(leg["id"], mm_id, price, expires_in_seconds=expires_in_seconds)
+    eng.submit_parlay_quote(request_id, mm_id, size, expires_in_seconds=expires_in_seconds)
 
 
 def resolve_parlay(eng: RfqEngine, request_id: UUID, legs, component_outcomes: list[ResolutionOutcome]):

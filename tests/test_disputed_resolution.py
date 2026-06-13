@@ -4,7 +4,7 @@ from decimal import Decimal
 import pytest
 
 from conftest import FIXED_AT
-from helpers import get_balance, quote_both_legs, resolve_parlay, submit_two_leg_request
+from helpers import get_balance, quote_parlay, resolve_parlay, submit_two_leg_request
 from rfq_engine.engine import DISPUTE_WINDOW_SECONDS
 from rfq_engine.enums import ResolutionOutcome, ResolutionStatus
 from rfq_engine.errors import DisputeWindowExpiredError, InvalidStateError
@@ -13,7 +13,7 @@ from rfq_engine.queries import Queries
 
 def test_dispute_freezes_funds_until_arbitrator_resolves(engine, participants, conn):
     request_id, legs = submit_two_leg_request(engine, participants["requester"])
-    quote_both_legs(engine, legs, participants["mm1"], Decimal("0.40"), Decimal("0.35"))
+    quote_parlay(engine, request_id, legs, participants["mm1"], [Decimal("0.40"), Decimal("0.35")])
     engine.run_matching(request_id)
     engine.accept(request_id)
 
@@ -42,7 +42,7 @@ def test_dispute_freezes_funds_until_arbitrator_resolves(engine, participants, c
 
 def test_void_refunds_both_parties(engine, participants, conn):
     request_id, legs = submit_two_leg_request(engine, participants["requester"])
-    quote_both_legs(engine, legs, participants["mm1"], Decimal("0.40"), Decimal("0.35"))
+    quote_parlay(engine, request_id, legs, participants["mm1"], [Decimal("0.40"), Decimal("0.35")])
     engine.run_matching(request_id)
     engine.accept(request_id)
 
@@ -64,7 +64,7 @@ def test_void_refunds_both_parties(engine, participants, conn):
 
 def test_cannot_dispute_while_pending(engine, participants, conn):
     request_id, legs = submit_two_leg_request(engine, participants["requester"])
-    quote_both_legs(engine, legs, participants["mm1"], Decimal("0.40"), Decimal("0.35"))
+    quote_parlay(engine, request_id, legs, participants["mm1"], [Decimal("0.40"), Decimal("0.35")])
     engine.run_matching(request_id)
     engine.accept(request_id)
 
@@ -76,7 +76,7 @@ def test_cannot_dispute_while_pending(engine, participants, conn):
 
 def test_cannot_dispute_after_finalized(engine, participants, conn):
     request_id, legs = submit_two_leg_request(engine, participants["requester"])
-    quote_both_legs(engine, legs, participants["mm1"], Decimal("0.40"), Decimal("0.35"))
+    quote_parlay(engine, request_id, legs, participants["mm1"], [Decimal("0.40"), Decimal("0.35")])
     engine.run_matching(request_id)
     engine.accept(request_id)
 
@@ -93,7 +93,7 @@ def test_cannot_dispute_after_finalized(engine, participants, conn):
 
 def test_cannot_dispute_after_window_expires(engine, participants, conn):
     request_id, legs = submit_two_leg_request(engine, participants["requester"])
-    quote_both_legs(engine, legs, participants["mm1"], Decimal("0.40"), Decimal("0.35"))
+    quote_parlay(engine, request_id, legs, participants["mm1"], [Decimal("0.40"), Decimal("0.35")])
     engine.run_matching(request_id)
     engine.accept(request_id)
 
@@ -109,7 +109,7 @@ def test_cannot_dispute_after_window_expires(engine, participants, conn):
 
 def test_process_resolution_expirations_auto_finalizes(engine, participants, conn):
     request_id, legs = submit_two_leg_request(engine, participants["requester"])
-    quote_both_legs(engine, legs, participants["mm1"], Decimal("0.40"), Decimal("0.35"))
+    quote_parlay(engine, request_id, legs, participants["mm1"], [Decimal("0.40"), Decimal("0.35")])
     engine.run_matching(request_id)
     engine.accept(request_id)
 
@@ -135,7 +135,7 @@ def test_process_resolution_expirations_auto_finalizes(engine, participants, con
 
 def test_cannot_propose_until_all_legs_reported(engine, participants, conn):
     request_id, legs = submit_two_leg_request(engine, participants["requester"])
-    quote_both_legs(engine, legs, participants["mm1"], Decimal("0.40"), Decimal("0.35"))
+    quote_parlay(engine, request_id, legs, participants["mm1"], [Decimal("0.40"), Decimal("0.35")])
     engine.run_matching(request_id)
     engine.accept(request_id)
 
@@ -148,7 +148,7 @@ def test_cannot_propose_until_all_legs_reported(engine, participants, conn):
 
 def test_parlay_no_when_one_leg_loses(engine, participants, conn):
     request_id, legs = submit_two_leg_request(engine, participants["requester"])
-    quote_both_legs(engine, legs, participants["mm1"], Decimal("0.40"), Decimal("0.35"))
+    quote_parlay(engine, request_id, legs, participants["mm1"], [Decimal("0.40"), Decimal("0.35")])
     engine.run_matching(request_id)
     engine.accept(request_id)
 
