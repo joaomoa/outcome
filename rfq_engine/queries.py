@@ -157,27 +157,6 @@ class Queries:
             {"id": quote_id, "status": status.value},
         )
 
-    def get_best_quote(
-        self, leg_id: UUID, notional: Decimal, at: datetime
-    ) -> dict | None:
-        return self.conn.execute(
-            """
-            SELECT * FROM quotes
-            WHERE leg_id = %(leg_id)s
-              AND status = %(status)s
-              AND expires_at > %(at)s
-              AND size >= %(notional)s
-            ORDER BY price ASC, size DESC, created_at ASC
-            LIMIT 1
-            """,
-            {
-                "leg_id": leg_id,
-                "status": QuoteStatus.ACTIVE.value,
-                "at": at,
-                "notional": notional,
-            },
-        ).fetchone()
-
     def get_selected_quote(self, leg_id: UUID) -> dict | None:
         return self.conn.execute(
             """
